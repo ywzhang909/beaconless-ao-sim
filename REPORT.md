@@ -10,8 +10,8 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
 |------|------|
 | 数据集（OOPAO 屏幕，已修正成像） | `data/beaconless_demo.h5`（2 500 个样本，3.93 GB） |
 | 模型检查点 | `checkpoints/best.pt`（CNN1，266 MB） |
-| 评估图表 | `results/fig_*.png` |
-| 评估指标 | `results/results.json` |
+| 评估图表 | `results/fig_*.png`（已入库，GitHub 可渲染） |
+| 评估指标 | `results/results.json`（已入库） |
 | 本报告 | `REPORT.md` |
 | WandB 项目 | https://wandb.ai/ywzhang909/beaconless-ao-sim |
 | 训练运行 | `curious-shape-18`（`krg3hrzn`） |
@@ -36,6 +36,27 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
    `physics/zernike_aotools.py`）作为 CNN 目标。
 5. **多平面成像** — 3 个测量平面（焦平面附近 ±z_R，公式 12），粗糙表面散射
    （10 个 realization），12-bit 量化（公式 13）。
+
+完整数据流（算法 1）：
+
+```mermaid
+flowchart TD
+    A["聚焦高斯光束<br/>束腰 λL/D"] --> B["10 层 OOPAO<br/>Kolmogorov 相位屏<br/>间隔 100 m / 1 km"]
+    B --> C["分步 FFT 传播<br/>propagation_fft"]
+    C --> D["目标面 1 km<br/>散射 / 粗糙表面"]
+    D --> E["算法 1 导引信标<br/>衍射极限高斯"]
+    E --> F["反向传播至瞳孔<br/>+ 解析抛物面离焦移除"]
+    F --> G["共轭信标相位<br/>Φ_beacon"]
+    G --> H["Zernike 投影<br/>Φ_Z78"]
+    H --> I["CNN 目标<br/>78 阶 Noll 系数"]
+    G --> J["倾斜 / 倾斜跟踪"]
+    D --> K["3 测量平面成像<br/>-zR / 0 / +zR"]
+    K --> L["非相干平均<br/>+ 吸收边界"]
+    L --> M["12-bit 逐图像量化"]
+    M --> N["输入 3x512x512<br/>uint16/2047"]
+    I --> O["训练 CNN1"]
+    N --> O
+```
 
 ### 1.2 OOPAO 集成（本工作）
 
@@ -73,6 +94,29 @@ slab 传播到远处目标）。
 
 修正后焦平面中心/边缘强度比由 ~3.7× 提升到 ~10–12×，边缘卷绕点亮消失，
 图像呈现"亮核 + 暗晕"的正确聚焦形态。
+
+成像修正前后对比（焦平面，中间列）：
+
+![成像修正前后对比](results/fig_image_fix.png)
+*上图：修正前（焦平面中心暗、边缘亮，FFT 卷绕伪影）。下图：修正后（吸收边界 +
+逐图像归一化，焦平面亮核 + 暗晕，边缘卷绕消失）。*
+
+```mermaid
+flowchart LR
+    subgraph BEFORE["修正前 - 伪影"]
+        B1["反向传播至瞳孔"] --> B2["无吸收边界<br/>孔径外场保留"]
+        B2 --> B3["FFT 卷绕<br/>点亮图像边缘"]
+        B3 --> B4["逐平面 max 量化<br/>焦平面欠饱和"]
+        B4 --> B5["焦平面中心暗<br/>边缘亮"]
+    end
+    subgraph AFTER["修正后 - 正确"]
+        A1["反向传播至瞳孔"] --> A2["乘 pupil 掩膜<br/>移除孔径外场"]
+        A2 --> A3["无卷绕"]
+        A3 --> A4["逐图像 max 量化<br/>每图满量程 2047"]
+        A4 --> A5["焦平面亮核加暗晕<br/>中心/边缘约10x"]
+    end
+    BEFORE -. "论文 2.4 / 图 2" .-> AFTER
+```
 
 ### 1.4 等效性与确定性
 

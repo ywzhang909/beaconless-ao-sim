@@ -10,5 +10,8 @@ checkpoints/
 !tests/data/*
 .ipynb_checkpoints/
 .omo/
-results/
+# report figures + metrics are committed so REPORT.md images render on GitHub
+results/*
+!results/fig_*.png
+!results/results.json
 
