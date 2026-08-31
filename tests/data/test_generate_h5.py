@@ -109,23 +109,19 @@ def test_generate_dataset_schema(tmp_path):
         np.testing.assert_allclose(f["mu"][:], train_labels.mean(axis=0), rtol=1e-5)
         np.testing.assert_allclose(f["sigma"][:], train_labels.std(axis=0), rtol=1e-5)
 
-        # scale_p = max over TRAIN raw images only
+        # scale_p = raw per-plane max over the TRAIN split (schema preserved).
         shared = physics_from_cfg(cfg)
         raw = np.zeros((N_total, 3, N, N), dtype=np.float32)
         for i in range(N_total):
-            seed = cfg["data"]["master_seed"] + i
-            s = simulate_sample(seed, cfg, shared=shared)
+            s = simulate_sample(cfg["data"]["master_seed"] + i, cfg, shared=shared)
             raw[i] = s.images
         train_raw = raw[f["train_idx"][:]]
         np.testing.assert_allclose(
             f["scale_p"][:], train_raw.max(axis=(0, 2, 3)), rtol=1e-5
         )
 
-        # max(images[:,p])/2047 close to max_raw/scale_p (Eq 13); scale_p is the
-        # TRAIN-only per-plane max, so test/eval samples exceeding it clip at
-        # 2047 (ratio saturates at 1.0).
-        for p in range(3):
-            for i in range(N_total):
-                ratio = images[i, p].max() / 2047
-                expected = min(raw[i, p].max() / f["scale_p"][p], 1.0)
-                assert ratio == pytest.approx(expected, rel=1e-3)
+        # Per-image normalization (paper Fig. 2): every non-empty image is
+        # scaled to its own max, so it reaches full 12-bit depth at 2047.
+        for i in range(N_total):
+            if images[i].max() > 0:
+                assert images[i].max() == 2047

@@ -99,18 +99,18 @@ CUDA_VISIBLE_DEVICES=1 uv run python smoke_test.py --config config.yaml --ckpt c
 
 | 分支 | 中位 FOM |
 |------|----------|
-| noao / track | 0.27–0.28 |
+| noao / track | 0.28 |
 | beacon | 0.93 |
 | z78（78 阶上界） | 0.88 |
-| **ML（CNN1）** | **0.49** |
+| **ML（CNN1）** | **0.54** |
 
-增益 g（公式 15）= **1.72**，η（公式 16）= **0.34**。
+增益 g（公式 15）= **1.90**，η（公式 16）= **0.43**。
 
 **预处理冒烟测试** — 网络对其训练时输入契约敏感。基线 `/2047`（3 平面）
-给出 FOM_ML ≈ 0.51 且 R_j ≈ 0.16；原始 uint16 和 z-score 输入使 CNN 主干饱和
+给出 FOM_ML ≈ 0.57 且 R_j ≈ 0.195；原始 uint16 和 z-score 输入使 CNN 主干饱和
 （特征最大值 ~10⁴–10⁵）并将 FOM_ML 崩溃至 ~0.001；单平面输入丢失了深度感知
-所需的离焦视差（FOM_ML ≈ 0.36，R_j ≈ 0.04）。全局 min-max 是最鲁棒的替代方案
-（FOM_ML ≈ 0.48）。完整表格见 [`REPORT.md`](REPORT.md#51-方法与结果)。
+所需的离焦视差（FOM_ML ≈ 0.31，R_j ≈ 0.02）。逐图像归一化后 min-max ≈ 基线
+（FOM_ML ≈ 0.57）。完整表格见 [`REPORT.md`](REPORT.md#51-方法与结果)。
 
 ## 说明
 
@@ -122,6 +122,6 @@ CUDA_VISIBLE_DEVICES=1 uv run python smoke_test.py --config config.yaml --ckpt c
 ## WandB
 
 - 项目：https://wandb.ai/ywzhang909/beaconless-ao-sim
-- 训练：`sparkling-plasma-1`（`1jjq96ae`）
-- 评估：`eoudxg1u`
-- 预处理冒烟：`094tewxf`
+- 训练：`curious-shape-18`（`krg3hrzn`）
+- 评估：`zkm1bhiq`
+- 预处理冒烟：`s9st1raa`

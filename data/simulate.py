@@ -604,6 +604,7 @@ def _imaging(
     )
     I_obj_track = (np.abs(E_obj_track) ** 2).astype(np.float32)
 
+    pupil = shared.pupil
     images = np.zeros((3, N, N), dtype=np.float32)
     for j in range(n_roughness):
         # Roughness realization (deterministic given seed).
@@ -611,14 +612,22 @@ def _imaging(
         E_scat = (np.sqrt(I_obj_track) * np.exp(1j * phi_r)).astype(np.complex64)
         # Back-propagate through the reversed screens.
         E_back = prop.split_step(E_scat, screens[::-1], -shared.dz)
+        # Absorbing boundary: the telescope has a finite aperture (Dscope).
+        # Field scattered outside the pupil must be removed before re-focusing,
+        # otherwise it wraps through the FFT and brightens the image border
+        # (paper Sec 2.4: absorbing boundary conditions to prevent boundary
+        # reflection).
+        E_back = (E_back * pupil).astype(np.complex64)
         # Collimate by the conjugate of the outgoing phase.
         E_c = (E_back * np.exp(-1j * phi_total)).astype(np.complex64)
         # Objective lens.
         E_l = (E_c * np.exp(-1j * k * r2 / (2.0 * f_obj))).astype(np.complex64)
-        # Propagate to each measurement plane.
+        # Incoherent imaging: average the per-realization INTENSITIES (paper
+        # Sec 2.4: "incoherent image"), not the fields. Field averaging
+        # retains the coherent speckle; intensity averaging blurs it out.
         for p in range(3):
             I_p = prop.angular_spectrum_intensity(E_l, shared.plane_offsets[p])
-            images[p] += I_p
+            images[p] += (I_p * pupil).astype(np.float32)
 
     images /= n_roughness
     return images, I_obj_track
@@ -809,24 +818,28 @@ def simulate_sample_fom(
 # Dataset generation
 # --------------------------------------------------------------------------- #
 def _quantize(images_raw: np.ndarray, scale_p: np.ndarray) -> np.ndarray:
-    """Eq 13: quantize raw intensities to 12-bit uint16, per-plane scaling.
+    """Per-image normalize (paper Fig. 2), then quantize to 12-bit uint16.
 
-    ``I_q = int(I * 2^11 / max_ds_p)`` clipped to ``[0, 2047]``.
+    Each image is scaled to its own max, so the focal plane (which
+    concentrates energy) reaches full 12-bit depth instead of being left dim
+    by a dataset-wide per-plane max. The dataset-wide ``scale_p`` is retained
+    in the HDF5 for schema compatibility but is no longer applied here.
 
     Parameters
     ----------
     images_raw : np.ndarray
         ``(3, N, N)`` float32 raw intensities.
     scale_p : np.ndarray
-        ``(3,)`` per-plane max over the training split.
+        ``(3,)`` per-plane raw max (stored for schema compatibility).
 
     Returns
     -------
     np.ndarray
-        ``(3, N, N)`` uint16 quantized images.
+        ``(3, N, N)`` uint16 quantized images (each image max = 2047).
     """
-    scaled = images_raw * (2**11) / scale_p[:, None, None]
-    scaled = np.clip(scaled, 0, 2**11 - 1)
+    img_max = images_raw.max(axis=(1, 2), keepdims=True)
+    normalized = images_raw / np.maximum(img_max, 1e-12)
+    scaled = np.clip(normalized * (2**11 - 1), 0, 2**11 - 1)
     return scaled.astype(np.uint16)
 
 
