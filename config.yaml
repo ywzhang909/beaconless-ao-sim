@@ -1,0 +1,115 @@
+# =============================================================================
+# Beaconless ML-AO simulation and training configuration
+#
+# Reference  : G. P. DiComo et al., "Beaconless adaptive optics for atmospheric
+#              laser propagation with multi-plane convolutional neural network",
+#              Opt. Express 33(15):31010 (2025), DOI 10.1364/OE.561077
+# Version    : values below are VERBATIM from Table 1 / Section 2.4-2.6 of the
+#              paper (paper full text: /home/ws/Zotero/storage/2QZD7WX2/).
+#              Each entry is annotated with its source (Table 1 unless noted).
+#              Demo scale deviates from paper scale where explicitly noted.
+# =============================================================================
+
+physical:
+  # --- Atmospheric parameters (Table 1) ---
+  cn2: 8.13e-15            # structure parameter Cn^2 [m^-2/3]
+  l0: 0.0                  # inner scale, paper sets 0 (independent of simulation guard)
+  l0_sim: 0.01             # [SIM GUARD] aotools/soapy divide by l0; 0 crashes,
+                           #   so the simulation uses 0.01 m (Kolmogorov-like)
+  L0: 100.0                # outer scale [m]
+  L: 1000.0                # propagation distance, fixed (CNN1); CNNL: 0.5-2.6 km random
+  rytov_sigma2: 0.35       # Rytov variance, fixed (CNN1); CNNL: 0.1-2.0
+
+  # --- Optical parameters (Table 1) ---
+  Dscope: 0.30             # telescope diameter [m] (30 cm)
+  rspot: 0.075             # initial beam radius [m] (7.5 cm)
+  wavelength: 800e-9       # central wavelength [m] (800 nm)
+  focal: 1000.0            # focusing focal length f = L (Table 1; focusing at target)
+
+  # --- Simulation parameters (Table 1) ---
+  N: 512                   # box resolution (512, 512) px
+  box_size: 0.30           # box size (30, 30) cm
+  n_screens: 10            # = L / screen_sep
+  screen_sep: 100.0        # phase screen separation [m] (Table 1)
+  n_roughness: 10          # Sec 2.4: ten roughness realizations averaged at telescope
+  roughness_seed: 42       # base seed for the roughness phase RNG stream
+  beam_source: "oopao"     # soapy (default) | aotools (deterministic per-seed) | oopao (OOPAO library screens)
+  screen_pool: 0           # 0 = independent screens per sample (paper-faithful)
+
+# --- Imaging geometry (Eqs. 9-12, Sec 2.4) ---
+imaging:
+  # z_R_APWS = pi * r_APWS^2 / lambda            (Eq 9)
+  # r_APWS   = f_obj * lambda / (2 * r0_eff)     (Eq 10)
+  # r0_eff   = r0 = (0.423 k^2 Cn^2 L)^(-3/5)    (Eq 11),  f_obj = 2 z_R_APWS (Eq 12)
+  # Analytic solution of the coupled system: z_R_APWS = r0^2 / (pi * lambda)
+  #   With r0 ~= 0.040 m @ 800 nm, L=1 km:  z_R_APWS ~= 640 m, f_obj ~= 1280 m
+  zR_APWS: null            # null => compute at runtime from Eq (11) via closure
+  f_obj: null              # null => f_obj = 2 * z_R_APWS
+  # Measurement planes (plane 1 = image/focal plane; planes 0,2 at +- z_R_APWS):
+  plane_offset_frac: [0.0, 1.0, 2.0]   # distances behind objective: f_obj - zR, f_obj, f_obj + zR
+
+# --- FOM bucket (Eq. 6) ---
+bucket:
+  diameter_frac: 2.5       # D_bucket = 2.5 * L * lambda / D_telescope
+                           #  -> 6.67e-3 m ~= 11.4 px diameter (radius ~5.7 px) @ N=512, box=0.3 m
+
+# --- Data generation ---
+data:
+  n_train: 2000            # [DEMO] paper CNN1: 81,000 ; CNNL: 100,000
+  n_test: 400              # [DEMO] paper: 9,000 (CNN1) / 5,300 (CNNL)
+  n_eval: 100              # [DEMO] paper: 1,000 (CNN1) / 1,000 at 10 L values (CNNL)
+  master_seed: 20250830    # seed schedule: sample seed = master_seed + sample_index
+  workers: 96              # multiprocessing workers (machine has 384 cores)
+  h5_path: "data/beaconless_demo.h5"
+  # Full paper scale (uncomment to reproduce paper dataset sizes):
+  # n_train: 81000
+  # n_test: 9000
+  # n_eval: 1000
+
+# --- Model (architecture per Sec 2.6, hyperparameters per Table 1) ---
+model:
+  name: "CNN1"             # CNN1 | CNNL
+  n_modes: 78              # Zernike truncation J = 78
+  channels: [32, 64, 128]  # 3-stage CNN channel counts
+  kernel: 3                # Table 1: kernel 3x3
+  stride: 1                # Table 1: stride 1
+  padding: 0               # Table 1: padding 0
+  mlp_width: 512           # Sec 2.6: MLP hidden layers w/ 512 neurons
+  mlp_depth: 4             # Sec 2.6: 4 ReLU hidden layers
+  pool_size: 18            # AdaptiveAvgPool2d((18,18)); flatten = 128*18*18 = 41472
+  length_head: false       # true => CNNL (adds 512-neuron length sensor head)
+  dropout: 0.0
+
+# --- Training (Table 1: Adam, lr 1e-4, beta 0.9/0.999, batch 32, MSE) ---
+train:
+  optimizer: "adam"
+  lr: 1.0e-4
+  beta1: 0.9
+  beta2: 0.999
+  batch_size: 32            # effective batch (paper Table 1) = micro_batch x grad_accum
+  micro_batch_size: 8       # VRAM-limited per-step batch; accumulation restores 32
+  n_steps: 3000             # [DEMO] paper CNN1: 11,500 ; CNNL: 35,000 (Table 1/Fig 7)
+  loss: "mse"
+  seed: 0
+  amp: true                # FP16 autocast + grad scaler (RTX 4090 class GPU)
+  mixed_precision: true
+  sim_eval_every: 500      # every N steps, FOM-evaluate the current batch in sim (Sec 2.6:
+                           #   "every 100 batches, predicted phase evaluated in simulation" -> 100 for paper)
+  sim_eval_n: 8            # number of eval samples used per in-training FOM evaluation
+  ckpt_dir: "checkpoints"
+  log_every: 10            # wandb scalar logging interval
+  grad_clip: null
+
+# --- Evaluation protocol (Sec 2.7) ---
+eval:
+  bucket_mask_px: null     # null => derived from bucket diameter in px
+  out_dir: "results"
+  plot_every: 20           # sample index stride for prediction-vs-truth figures
+
+# --- WandB ---
+wandb:
+  project: "beaconless-ao-sim"
+  entity: "ywzhang909"
+  run_name: null           # null => auto-generated
+  tags: ["cnn1", "demo"]
+  notes: "Demo-scale reproduction of Opt. Express 33(15):31010 (2025) CNN1."

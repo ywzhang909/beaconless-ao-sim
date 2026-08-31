@@ -1,0 +1,27 @@
+[project]
+name = "beaconless-ao-sim"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aotools>=1.0.8",
+    "h5py>=3.16.0",
+    "joblib>=1.5.3",
+    "jsonpickle>=4.1.2",
+    "matplotlib>=3.11.1",
+    "numba>=0.67.0",
+    "numpy>=2.5.2",
+    "pyfftw>=0.15.1",
+    "pyyaml>=6.0.3",
+    "scikit-image>=0.26.0",
+    "scipy>=1.18.1",
+    "soapy>=0.15.0",
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+    "tqdm>=4.70.0",
+    "wandb>=0.29.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

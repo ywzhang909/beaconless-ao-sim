@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.h5
+*.hdf5
+runs/
+wandb/
+checkpoints/
+*.png
+!tests/data/*
+.ipynb_checkpoints/
+.omo/
+results/
+
