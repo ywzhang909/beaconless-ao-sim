@@ -10,6 +10,10 @@ checkpoints/
 !tests/data/*
 .ipynb_checkpoints/
 .omo/
+# build metadata (pip/uv egg-info) for the vendored OOPAO install source
+*.egg-info/
+# build output from compiling the OOPAO install source
+build/
 # report figures + metrics are committed so REPORT.md images render on GitHub
 results/*
 !results/fig_*.png

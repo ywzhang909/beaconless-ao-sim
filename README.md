@@ -16,8 +16,9 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
    （束腰 `λL/D`）、带**解析抛物面离焦移除**的信标反向传播至瞳孔、从共轭
    信标相位提取的倾斜/倾斜跟踪，以及 78 阶 Zernike 投影
    `Φ_Z78 = M_Z78(M⁺_Z78 Φ_beacon)` 作为 CNN 目标（公式 1–5，算法 B–C）。
-   湍流屏幕从 **OOPAO** 库（`physics/oopao/`，`physics/oopao_backend.py`）
-   中抽取。
+   湍流屏幕从**原生安装**的 [OOPAO](https://github.com/cheritier/OOPAO) 库
+   （`import OOPAO`，安装来源见 `third_party/`）经 `physics/oopao_backend.py`
+   抽取。
 2. **多平面成像** — 3 个测量平面（焦平面附近 ±z_R，公式 12）、粗糙表面散射、
    12-bit 量化（公式 13）、标签 z 标准化（公式 14）。
 3. **CNN 训练**（`train.py`，`models/cnn.py`）— 3 阶段 CNN + 4 层 MLP 头部
@@ -30,24 +31,35 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
    原始+单平面）上运行训练好的 CNN1，并报告每种方法的 R_j、FOM_ML 及
    特征图统计量。
 
-## OOPAO 集成
+## OOPAO 集成（原生安装）
 
-湍流屏幕生成器已重建为 [OOPAO](https://github.com/cheritier/OOPAO)
-（内嵌于 `physics/oopao/`）。`OopaoScreenBackend` 抽取每层 von-Karman 屏幕，
-将其中心裁剪至 512×512 的瞳孔网格，并按比例缩放每层振幅至目标每 slab r0
-（`r0_slab = r0_path · n^(3/5)`）。通过 `physical.beam_source` 配置开关选择
-（`soapy | aotools | oopao`；默认 `oopao`）。自定义 FFT 分步传播器、算法 1
-信标反向传播和多平面成像全部保留 — OOPAO 仅提供湍流 + 瞳孔 + Zernike 基底。
-OOPAO 屏幕与 aotools 路径在统计上等效（每 slab OPD 标准差比值 ≈ 0.84）且
-按种子确定性生成。
+湍流屏幕生成器基于 [OOPAO](https://github.com/cheritier/OOPAO)，现采用**原生安装**
+（替代早期直接把 OOPAO 部分模块拷贝进 `physics/oopao/` 的 vendored 方案）：
+
+- 官方 OOPAO 源码放在 `third_party/`（含对上游 `sys.path` 探测 bug 的最小修补，
+  见 [`docs/oopao/README.md`](docs/oopao/README.md)）；
+- 通过 `pyproject.toml` 的 `tool.uv.sources`（`oopao = { path = "third_party" }`）
+  注册为项目依赖，`uv sync` 即可复现该原生安装；
+- `physics/oopao_backend.py` 改用 `from OOPAO.<模块> import <类>` 导入。
+
+`OopaoScreenBackend` 抽取每层 von-Karman 屏幕，将其中心裁剪至 512×512 的瞳孔
+网格，并按比例缩放每层振幅至目标每 slab r0（`r0_slab = r0_path · n^(3/5)`）。
+通过 `physical.beam_source` 配置开关选择（`soapy | aotools | oopao`；默认
+`oopao`）。自定义 FFT 分步传播器、算法 1 信标反向传播和多平面成像全部保留 —
+OOPAO 仅提供湍流 + 瞳孔 + Zernike 基底。OOPAO 屏幕与 aotools 路径在统计上等效
+（每 slab OPD 标准差比值 ≈ 0.84）且按种子确定性生成。
+
+> 可视化 / 测试：`docs/oopao/oopao_explore.ipynb`（Jupyter notebook，演示
+> `Telescope`/`Atmosphere`/`Source`/`Zernike` 与 `OopaoScreenBackend`）。
 
 ## 目录结构
 
 ```
 data/simulate.py         算法 1 流水线（屏幕、信标、FOM 分支、数据集）
 data/generate_h5.py      CLI：两趟 HDF5 数据集写入器
-physics/oopao/           内嵌 OOPAO 模块（Atmosphere、Telescope、Source、Zernike……）
+third_party/             原生安装的 OOPAO 官方源码（pyproject 路径依赖）
 physics/oopao_backend.py OopaoScreenBackend（OOPAO 湍流、r0 缩放）
+docs/oopao/              OOPAO 中文文档 + 可视化 notebook
 physics/                 zernike_aotools、screens_soapy、propagation_fft、scattering
 models/cnn.py            CNN1 / CNNL 架构
 train.py                 训练循环（支持 DDP、梯度累积）

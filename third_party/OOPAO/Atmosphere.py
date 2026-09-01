@@ -13,18 +13,9 @@ import numpy as np
 from numpy.random import RandomState
 import matplotlib.gridspec as gridspec
 from .phaseStats import ft_phase_screen, ft_sh_phase_screen, makeCovarianceMatrix
+from .tools.displayTools import makeSquareAxes
+from .tools.interpolateGeometricalTransformation import interpolate_cube, interpolate_image
 from .tools.tools import createFolder, emptyClass, globalTransformation, pol2cart, translationImageMatrix, OopaoError, warning
-
-# Display/interpolation helpers are only used by Atmosphere's *display* methods
-# (display_atm_layers etc.), which our screen-generation path never calls. Import
-# them lazily so the vendored substrate doesn't drag in OOPAO's full
-# MisRegistration/scipy-ndimage dependency tree.
-def makeSquareAxes(ax):
-    raise NotImplementedError("display-only; not used in the screen-generation path")
-def interpolate_cube(cube_in, pixel_size_in, pixel_size_out, resolution_out):
-    raise NotImplementedError("display-only; not used in the screen-generation path")
-def interpolate_image(im_in, pixel_size_in, pixel_size_out, resolution_out):
-    raise NotImplementedError("display-only; not used in the screen-generation path")
 try:
     import cupy as xp
     global_gpu_flag = True
@@ -165,15 +156,7 @@ class Atmosphere:
         """
         self.tag = 'atmosphere'      # Tag of the object
         # detect the simulation precision requested
-        OOPAO_path = [s for s in sys.path if "OOPAO" in s or "oopao" in s]
-        if OOPAO_path:
-            l_ = []
-            for i in OOPAO_path:
-                l_.append(len(i))
-            path = OOPAO_path[np.argmin(l_)]
-            precision = np.load(path+'/precision_oopao.npy')
-        else:
-            precision = 64
+        precision = 64  # constant: OOPAO always saves the simulated precision as 64 (float64)
         if precision == 64:
             self.precision = np.float64
         else:

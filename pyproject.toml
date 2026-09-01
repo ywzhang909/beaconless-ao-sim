@@ -19,7 +19,11 @@ dependencies = [
     "torchvision>=0.28.0",
     "tqdm>=4.70.0",
     "wandb>=0.29.0",
+    "oopao",
 ]
+
+[tool.uv.sources]
+oopao = { path = "third_party", editable = false }
 
 [dependency-groups]
 dev = [

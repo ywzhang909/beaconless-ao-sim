@@ -35,8 +35,9 @@ from __future__ import annotations
 import numpy as np
 
 from physics.screens_soapy import compute_r0
-from physics.oopao import Atmosphere, Telescope
-from physics.oopao.Source import Source
+from OOPAO.Atmosphere import Atmosphere
+from OOPAO.Telescope import Telescope
+from OOPAO.Source import Source
 
 __all__ = ["OopaoScreenBackend"]
 

@@ -14,7 +14,7 @@ try:
     xp = np  # for now
 except ImportError or ModuleNotFoundError:
     xp = np
-from .tools.tools import set_binning, warning, OopaoError
+from OOPAO.tools.tools import set_binning, warning, OopaoError
 
 
 class Telescope:
@@ -142,15 +142,7 @@ class Telescope:
 
         """
 
-        OOPAO_path = [s for s in sys.path if "OOPAO" in s or "oopao" in s]
-        if OOPAO_path:
-            l = []
-            for i in OOPAO_path:
-                l.append(len(i))
-            path = OOPAO_path[np.argmin(l)]
-            precision = np.load(path+'/precision_oopao.npy')
-        else:
-            precision = 64
+        precision = 64  # constant: OOPAO always saves the simulated precision as 64 (float64)
         if precision == 64:
             self.precision = np.float64
         else:
