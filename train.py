@@ -39,7 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 
-from models.cnn import CNN1, CNNL
+from models.cnn import CNN1, CNN1Freq, CNN1Star, CNNL
 from utils import wandb_utils
 from utils.metrics import eta, gain
 
@@ -182,16 +182,40 @@ def build_model(cfg: dict) -> nn.Module:
     name = m.get("name", "CNN1")
     kwargs: dict[str, Any] = dict(
         n_modes=int(m["n_modes"]),
-        channels=tuple(int(c) for c in m["channels"]),
-        pool_size=int(m.get("pool_size", 18)),
         mlp_width=int(m.get("mlp_width", 512)),
         mlp_depth=int(m.get("mlp_depth", 4)),
         dropout=float(m.get("dropout", 0.0)),
     )
+    if "channels" in m:
+        kwargs["channels"] = tuple(int(c) for c in m["channels"])
+        kwargs.setdefault("pool_size", int(m.get("pool_size", 18)))
     if name == "CNN1":
         return CNN1(**kwargs)
     if name == "CNNL":
         return CNNL(**kwargs)
+    if name == "CNN1Freq":
+        freq_kwargs = dict(
+            freq_pool=int(m.get("freq_pool", 8)),
+            freq_refine_ch=int(m.get("freq_refine_ch", 16)),
+        )
+        return CNN1Freq(**kwargs, **freq_kwargs)
+    if name == "CNN1Star":
+        # CNN1Star uses base_dim/depths instead of channels, and its own
+        # pool_size default (12), so it gets only the shared MLP kwargs.
+        star_kwargs = dict(
+            n_modes=int(m["n_modes"]),
+            mlp_width=int(m.get("mlp_width", 512)),
+            mlp_depth=int(m.get("mlp_depth", 4)),
+            dropout=float(m.get("dropout", 0.0)),
+            base_dim=int(m.get("base_dim", 32)),
+            depths=tuple(int(d) for d in m.get("depths", (1, 1, 2))),
+            mlp_ratio=int(m.get("mlp_ratio", 4)),
+            use_se=bool(m.get("use_se", False)),
+            se_reduction=int(m.get("se_reduction", 16)),
+            pool_size=int(m.get("pool_size", 12)),
+            kernel=int(m.get("kernel", 3)),
+        )
+        return CNN1Star(**star_kwargs)
     raise ValueError(f"unknown model name {name!r}")
 
 

@@ -1,0 +1,93 @@
+# =============================================================================
+# CNN1Freq experiment: CNN1 + 2D-FFT log-magnitude frequency-domain branch.
+#
+# Inherits all base config values; only the model section and run metadata differ.
+# The spectral branch adds a parallel 2D-FFT (rfft2) log-magnitude extractor whose
+# flattened features are concatenated to the spatial CNN encoding before the MLP.
+# =============================================================================
+
+physical:
+  cn2: 8.13e-15
+  l0: 0.0
+  l0_sim: 0.01
+  L0: 100.0
+  L: 1000.0
+  rytov_sigma2: 0.35
+  Dscope: 0.30
+  rspot: 0.075
+  wavelength: 800e-9
+  focal: 1000.0
+  N: 512
+  box_size: 0.30
+  n_screens: 10
+  screen_sep: 100.0
+  n_roughness: 10
+  roughness_seed: 42
+  beam_source: "oopao"
+  screen_pool: 0
+
+imaging:
+  zR_APWS: null
+  f_obj: null
+  plane_offset_frac: [0.0, 1.0, 2.0]
+
+bucket:
+  diameter_frac: 2.5
+
+data:
+  n_train: 2000
+  n_test: 400
+  n_eval: 100
+  master_seed: 20250830
+  workers: 96
+  h5_path: "data/beaconless_demo.h5"
+
+# --- Model: CNN1Freq (spatial CNN + FFT spectral branch) ---
+model:
+  name: "CNN1Freq"
+  n_modes: 78
+  channels: [32, 64, 128]
+  kernel: 3
+  stride: 1
+  padding: 0
+  mlp_width: 512
+  mlp_depth: 4
+  pool_size: 18
+  length_head: false
+  dropout: 0.0
+  freq_pool: 8              # adaptive-avg-pool size of the FFT log-magnitude grid
+  freq_refine_ch: 16        # 1x1 conv width recombining the spectral bands
+
+# --- Training (demo scale) ---
+train:
+  optimizer: "adam"
+  lr: 1.0e-4
+  beta1: 0.9
+  beta2: 0.999
+  batch_size: 32
+  micro_batch_size: 8
+  n_steps: 3000
+  loss: "mse"
+  seed: 0
+  amp: true
+  mixed_precision: true
+  sim_eval_every: 500
+  sim_eval_n: 8
+  ckpt_dir: "checkpoints/cnn1freq"
+  log_every: 10
+  grad_clip: null
+
+# --- Evaluation protocol (Sec 2.7) ---
+eval:
+  bucket_mask_px: null
+  out_dir: "results/cnn1freq"
+  plot_every: 20
+  batch_size: 8            # VRAM-limited inference batch (matches micro_batch)
+
+# --- WandB ---
+wandb:
+  project: "beaconless-ao-sim"
+  entity: "ywzhang909"
+  run_name: "cnn1freq-demo"
+  tags: ["cnn1freq", "freq-domain", "demo"]
+  notes: "CNN1 + 2D-FFT frequency-domain branch (demo scale)."

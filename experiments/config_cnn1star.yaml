@@ -1,0 +1,93 @@
+# =============================================================================
+# CNN1Star experiment: StarNet-style feature extractor + SE attention.
+#
+# Inherits all base config values; only the model section and run metadata differ.
+# CNN1Star replaces the 3-stage vanilla CNN with StarBlock stages (star operation:
+# element-wise product of two 1x1 projections) plus an optional squeeze-and-
+# excitation (SE) attention tail.
+# =============================================================================
+
+physical:
+  cn2: 8.13e-15
+  l0: 0.0
+  l0_sim: 0.01
+  L0: 100.0
+  L: 1000.0
+  rytov_sigma2: 0.35
+  Dscope: 0.30
+  rspot: 0.075
+  wavelength: 800e-9
+  focal: 1000.0
+  N: 512
+  box_size: 0.30
+  n_screens: 10
+  screen_sep: 100.0
+  n_roughness: 10
+  roughness_seed: 42
+  beam_source: "oopao"
+  screen_pool: 0
+
+imaging:
+  zR_APWS: null
+  f_obj: null
+  plane_offset_frac: [0.0, 1.0, 2.0]
+
+bucket:
+  diameter_frac: 2.5
+
+data:
+  n_train: 2000
+  n_test: 400
+  n_eval: 100
+  master_seed: 20250830
+  workers: 96
+  h5_path: "data/beaconless_demo.h5"
+
+# --- Model: CNN1Star (StarNet extractor + SE attention) ---
+model:
+  name: "CNN1Star"
+  n_modes: 78
+  mlp_width: 512
+  mlp_depth: 4
+  dropout: 0.0
+  base_dim: 32              # first-stage channel width (doubles each stage)
+  depths: [1, 1, 2]         # StarBlocks per stage
+  mlp_ratio: 4              # expansion ratio inside each StarBlock
+  use_se: true              # append squeeze-and-excitation attention
+  se_reduction: 16
+  pool_size: 8              # adaptive-avg-pool grid before flattening (keeps MLP small)
+  kernel: 3                 # stride-2 downsample conv kernel
+
+# --- Training (demo scale; micro-batch reduced for StarNet VRAM) ---
+train:
+  optimizer: "adam"
+  lr: 1.0e-4
+  beta1: 0.9
+  beta2: 0.999
+  batch_size: 32
+  micro_batch_size: 4       # StarNet needs smaller micro-batch on the constrained GPU
+  n_steps: 3000
+  loss: "mse"
+  seed: 0
+  amp: true
+  mixed_precision: true
+  sim_eval_every: 500
+  sim_eval_n: 8
+  ckpt_dir: "checkpoints/cnn1star"
+  log_every: 10
+  grad_clip: null
+
+# --- Evaluation protocol (Sec 2.7) ---
+eval:
+  bucket_mask_px: null
+  out_dir: "results/cnn1star"
+  plot_every: 20
+  batch_size: 8            # VRAM-limited inference batch (matches micro_batch)
+
+# --- WandB ---
+wandb:
+  project: "beaconless-ao-sim"
+  entity: "ywzhang909"
+  run_name: "cnn1star-demo"
+  tags: ["cnn1star", "starnet", "attention", "demo"]
+  notes: "StarNet-style extractor + SE attention (demo scale)."

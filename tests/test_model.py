@@ -12,7 +12,16 @@ Architecture facts (verified against Optics Express 33(15):31010, 2025):
 import torch
 import pytest
 
-from models.cnn import BaseBeaconlessCNN, CNN1, CNNL, count_parameters
+from models.cnn import (
+    BaseBeaconlessCNN,
+    CNN1,
+    CNN1Freq,
+    CNN1Star,
+    CNNL,
+    SEBlock,
+    StarBlock,
+    count_parameters,
+)
 
 
 def test_cnn1_forward_shape():
@@ -99,3 +108,117 @@ def test_length_head_effect():
     grad = torch.autograd.grad(out[0, 0], length, create_graph=False)[0]
     assert torch.isfinite(grad).all()
     assert grad.abs().item() > 0
+
+
+def test_cnn1freq_forward_shape():
+    """CNN1Freq() on (2, 3, 512, 512) must output (2, 78)."""
+    torch.manual_seed(0)
+    model = CNN1Freq()
+    images = torch.randn(2, 3, 512, 512)
+    with torch.inference_mode():
+        out = model(images)
+    assert out.shape == (2, 78)
+
+
+def test_cnn1freq_has_freq_branch():
+    """CNN1Freq must expose a working FrequencyBranch; CNN1 must not."""
+    cnn1 = CNN1()
+    freq = CNN1Freq()
+    assert not hasattr(cnn1, "freq_branch")
+    assert hasattr(freq, "freq_branch")
+    torch.manual_seed(0)
+    images = torch.randn(2, 3, 512, 512)
+    with torch.inference_mode():
+        feats = freq.freq_branch(images)
+    assert feats.shape == (2, freq.freq_branch.freq_size)
+    assert torch.isfinite(feats).all()
+
+
+def test_cnn1freq_param_count():
+    """CNN1Freq must have more params than CNN1 (the spectral branch adds weights)."""
+    torch.manual_seed(0)
+    n_cnn1 = count_parameters(CNN1())
+    n_freq = count_parameters(CNN1Freq())
+    assert n_freq > n_cnn1
+    assert abs(n_freq - 22_680_222) <= 2, f"CNN1Freq params = {n_freq}"
+
+
+def test_cnn1freq_mse_backward():
+    """Forward + MSE loss + backward must complete with finite gradients."""
+    torch.manual_seed(0)
+    model = CNN1Freq()
+    images = torch.randn(2, 3, 512, 512)
+    target = torch.randn(2, 78)
+    out = model(images)
+    loss = torch.nn.functional.mse_loss(out, target)
+    loss.backward()
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    assert len(grads) > 0
+    # Gradients must flow into the frequency branch in particular.
+    fb_grads = [p.grad for p in model.freq_branch.parameters() if p.grad is not None]
+    assert len(fb_grads) > 0
+    for g in grads:
+        assert torch.isfinite(g).all()
+    for g in fb_grads:
+        assert torch.isfinite(g).all()
+
+
+def test_starblock_shape_and_residual():
+    """StarBlock preserves spatial dims and channel count (residual add)."""
+    torch.manual_seed(0)
+    block = StarBlock(dim=32, mlp_ratio=4)
+    x = torch.randn(2, 32, 64, 64)
+    out = block(x)
+    assert out.shape == x.shape
+    assert torch.isfinite(out).all()
+
+
+def test_seblock_shape():
+    """SEBlock preserves (B, C, H, W) and reweights with a sigmoid in [0,1]."""
+    torch.manual_seed(0)
+    se = SEBlock(channels=64, reduction=16)
+    x = torch.randn(2, 64, 32, 32)
+    out = se(x)
+    assert out.shape == x.shape
+
+
+def test_cnn1star_forward_shape():
+    """CNN1Star() on (2, 3, 512, 512) must output (2, 78)."""
+    torch.manual_seed(0)
+    model = CNN1Star()
+    images = torch.randn(2, 3, 512, 512)
+    with torch.inference_mode():
+        out = model(images)
+    assert out.shape == (2, 78)
+
+
+def test_cnn1star_se_switch():
+    """CNN1Star(use_se=True) must have an SEBlock tail; use_se=False must not."""
+    with_se = CNN1Star(use_se=True)
+    without = CNN1Star(use_se=False)
+    assert any(isinstance(m, SEBlock) for m in with_se.star_features)
+    assert not any(isinstance(m, SEBlock) for m in without.star_features)
+
+
+def test_cnn1star_param_count():
+    """CNN1Star must be smaller than CNN1 (efficient StarNet extractor)."""
+    torch.manual_seed(0)
+    n_cnn1 = count_parameters(CNN1())
+    n_star = count_parameters(CNN1Star())
+    assert n_star < n_cnn1
+    assert abs(n_star - 10_852_878) <= 2, f"CNN1Star params = {n_star}"
+
+
+def test_cnn1star_mse_backward():
+    """Forward + MSE loss + backward must complete with finite gradients."""
+    torch.manual_seed(0)
+    model = CNN1Star(use_se=True)
+    images = torch.randn(2, 3, 512, 512)
+    target = torch.randn(2, 78)
+    out = model(images)
+    loss = torch.nn.functional.mse_loss(out, target)
+    loss.backward()
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    assert len(grads) > 0
+    for g in grads:
+        assert torch.isfinite(g).all()

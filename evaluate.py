@@ -54,7 +54,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from models.cnn import CNN1, CNNL  # noqa: E402
+from models.cnn import CNN1, CNN1Freq, CNN1Star, CNNL  # noqa: E402
 from utils.metrics import eta, gain, mode_pearson  # noqa: E402
 from utils.wandb_utils import (  # noqa: E402
     finish_wandb,
@@ -118,14 +118,36 @@ def build_model(cfg: dict) -> torch.nn.Module:
     m = cfg["model"]
     kwargs: dict[str, Any] = {
         "n_modes": m["n_modes"],
-        "channels": tuple(m["channels"]),
-        "pool_size": m.get("pool_size", 18),
         "mlp_width": m.get("mlp_width", 512),
         "mlp_depth": m.get("mlp_depth", 4),
         "dropout": m.get("dropout", 0.0),
     }
+    if "channels" in m:
+        kwargs["channels"] = tuple(m["channels"])
+        kwargs.setdefault("pool_size", m.get("pool_size", 18))
     if m.get("length_head", False):
         return CNNL(**kwargs)
+    if m.get("name") == "CNN1Freq":
+        freq_kwargs = {
+            "freq_pool": m.get("freq_pool", 8),
+            "freq_refine_ch": m.get("freq_refine_ch", 16),
+        }
+        return CNN1Freq(**kwargs, **freq_kwargs)
+    if m.get("name") == "CNN1Star":
+        star_kwargs = {
+            "n_modes": m["n_modes"],
+            "mlp_width": m.get("mlp_width", 512),
+            "mlp_depth": m.get("mlp_depth", 4),
+            "dropout": m.get("dropout", 0.0),
+            "base_dim": m.get("base_dim", 32),
+            "depths": tuple(int(d) for d in m.get("depths", (1, 1, 2))),
+            "mlp_ratio": m.get("mlp_ratio", 4),
+            "use_se": m.get("use_se", False),
+            "se_reduction": m.get("se_reduction", 16),
+            "pool_size": m.get("pool_size", 12),
+            "kernel": m.get("kernel", 3),
+        }
+        return CNN1Star(**star_kwargs)
     return CNN1(**kwargs)
 
 
@@ -688,6 +710,7 @@ def main(
         data["mu"],
         data["sigma"],
         device,
+        batch_size=int(cfg["eval"].get("batch_size", 32)),
     )
     c_true = np.asarray(data["labels"], dtype=np.float64)[eval_idx]
 
