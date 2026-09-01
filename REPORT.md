@@ -286,6 +286,28 @@ CNN1 更容易出现过拟合（训练损失降到 0.105，约为 CNN1Freq 的 0
 （0.1698）最高。结论：StarNet+SE 架构以 ~29% 的参数量在独立评估上**达到与 CNN1
 相当的精度**，参数效率显著更优；在更大数据规模 + 正则化下有望持续领先。
 
+### 4.5.3 输入预处理冒烟测试（新模型）
+
+`smoke_test.py` 对两个新模型在 50 样本子集上逐一运行 7 种输入预处理方法
+（`--batch-size 8`，适配受显存限制的 GPU）。套件验证两个新架构均满足与 CNN1
+相同的输入契约（**uint16 / 2047**，3 平面最佳），且 `model.features` / `model.avgpool`
+接口与既有分析流水线兼容。结果上传至 WandB：
+
+| 模型 | baseline/norm FOM_ML | R_j 均值 | WandB 运行 |
+|------|---------------------|---------|-----------|
+| CNN1Freq | **0.5553** | 0.1929 | `cnn1freq-smoke`（`21ogggjz`） |
+| CNN1Star | **0.5522** | 0.1686 | `cnn1star-smoke`（`0d9zvk3d`） |
+
+两个新模型在 `baseline_norm`（3 平面 / 2047）预处理下 FOM_ML ≈ 0.55，与 CNN1
+基线的冒烟结果（≈ 0.565）一致，确认频域分支与 StarNet 主干均未破坏输入预处理
+契约、且与既有特征图诊断链路兼容。
+
+**兼容性说明**：`CNN1Star` 的特征提取器在早期版本以 `star_features` 命名存入
+检查点；为统一到基线的 `features` 接口（供 `smoke_test.py` 等下游使用），现更名为
+`features`，并在 `CNN1Star._load_from_state_dict` 中加入 `star_features.*` →
+`features.*` 的键重映射以保证老检查点可继续加载（配套单元测试
+`test_cnn1star_loads_old_star_features_checkpoint` 覆盖）。
+
 ---
 
 ## 5. 输入预处理冒烟测试（本工作）

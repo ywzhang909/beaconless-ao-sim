@@ -512,7 +512,7 @@ class CNN1Star(BaseBeaconlessCNN):
             dim = dim * 2
         if self.use_se:
             stages.append(SEBlock(prev_ch, reduction=self.se_reduction))
-        self.star_features = nn.Sequential(*stages)
+        self.features = nn.Sequential(*stages)
 
         self.avgpool = nn.AdaptiveAvgPool2d((self.pool_size, self.pool_size))
         self._flat_size = int(prev_ch * self.pool_size * self.pool_size)
@@ -520,9 +520,37 @@ class CNN1Star(BaseBeaconlessCNN):
 
     def _image_encoding(self, images: torch.Tensor) -> torch.Tensor:
         """Run the StarNet extractor and flatten the pooled encoding."""
-        x = self.star_features(images)
+        x = self.features(images)
         x = self.avgpool(x)
         return torch.flatten(x, 1)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ) -> None:
+        # The extractor was previously saved as `star_features`; accept old
+        # checkpoints by remapping those keys to the current `features` scope.
+        remap = {}
+        for key in list(state_dict.keys()):
+            if key.startswith(prefix + "star_features."):
+                new_key = prefix + "features." + key[len(prefix + "star_features.") :]
+                remap[new_key] = state_dict.pop(key)
+        state_dict.update(remap)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Map intensity images to ``(B, n_modes)`` via the StarNet extractor."""

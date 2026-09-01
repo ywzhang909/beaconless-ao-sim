@@ -196,8 +196,8 @@ def test_cnn1star_se_switch():
     """CNN1Star(use_se=True) must have an SEBlock tail; use_se=False must not."""
     with_se = CNN1Star(use_se=True)
     without = CNN1Star(use_se=False)
-    assert any(isinstance(m, SEBlock) for m in with_se.star_features)
-    assert not any(isinstance(m, SEBlock) for m in without.star_features)
+    assert any(isinstance(m, SEBlock) for m in with_se.features)
+    assert not any(isinstance(m, SEBlock) for m in without.features)
 
 
 def test_cnn1star_param_count():
@@ -222,3 +222,17 @@ def test_cnn1star_mse_backward():
     assert len(grads) > 0
     for g in grads:
         assert torch.isfinite(g).all()
+
+
+def test_cnn1star_loads_old_star_features_checkpoint():
+    """CNN1Star must load a state_dict saved under the old ``star_features`` keys."""
+    torch.manual_seed(0)
+    model = CNN1Star(use_se=True)
+    # Re-save every key under the legacy naming: `features.` -> `star_features.`.
+    legacy = {}
+    for k, v in model.state_dict().items():
+        new_k = ("star_features." + k[len("features."):]) if k.startswith("features.") else k
+        legacy[new_k] = v
+    missing, unexpected = model.load_state_dict(legacy, strict=False)
+    assert not missing, f"missing keys: {missing}"
+    assert not unexpected, f"unexpected keys: {unexpected}"
