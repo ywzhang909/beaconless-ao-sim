@@ -68,7 +68,7 @@ data:
 
 # --- Model (architecture per Sec 2.6, hyperparameters per Table 1) ---
 model:
-  name: "CNN1"             # CNN1 | CNNL
+  name: "CNN1"             # CNN1 | CNNL | CNN1Freq | CNN1Star
   n_modes: 78              # Zernike truncation J = 78
   channels: [32, 64, 128]  # 3-stage CNN channel counts
   kernel: 3                # Table 1: kernel 3x3
@@ -79,6 +79,16 @@ model:
   pool_size: 18            # AdaptiveAvgPool2d((18,18)); flatten = 128*18*18 = 41472
   length_head: false       # true => CNNL (adds 512-neuron length sensor head)
   dropout: 0.0
+  # CNN1Freq spectral branch (used only when name == "CNN1Freq"):
+  # freq_pool: 8           # adaptive-avg-pool size of the 2D-FFT log-magnitude grid
+  # freq_refine_ch: 16     # 1x1 conv width that recombines the spectral bands
+  # CNN1Star StarNet/attention backbone (used only when name == "CNN1Star"):
+  # base_dim: 32           # channel width of the first StarBlock stage
+  # depths: [1, 1, 2]      # StarBlocks per stage
+  # mlp_ratio: 4           # expansion ratio inside each StarBlock
+  # use_se: false          # append a squeeze-and-excitation attention layer
+  # se_reduction: 16       # SE bottleneck reduction ratio
+  # pool_size: 12          # adaptive-avg-pool grid before flattening
 
 # --- Training (Table 1: Adam, lr 1e-4, beta 0.9/0.999, batch 32, MSE) ---
 train:
