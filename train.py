@@ -37,9 +37,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import yaml
 
 from models.cnn import CNN1, CNN1Freq, CNN1Star, CNNL
+from physics.config import SimConfig, load_config
 from utils import wandb_utils
 from utils.metrics import eta, gain
 
@@ -54,41 +54,38 @@ IMAGE_MAX = 2047.0
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-def attach_run(cfg: dict, *, ckpt_dir: Optional[str] = None, no_wandb: bool = False) -> dict:
+def attach_run(cfg: SimConfig, *, ckpt_dir: Optional[str] = None, no_wandb: bool = False) -> SimConfig:
     """Attach run-time paths and DDP/device info to ``cfg`` (mutates and returns it).
 
-    Sets ``cfg["run"]`` with:
+    Sets ``cfg.run`` fields:
     - IO paths: ``ckpt_dir``, ``out_dir``, ``h5_path`` (absolute).
     - Device / DDP: ``device``, ``rank``, ``world_size``, ``is_distributed``.
     - Training: ``amp`` (autocast enabled only on CUDA), ``no_wandb``.
 
     Parameters
     ----------
-    cfg : dict
-        YAML-loaded configuration (must contain ``data.h5_path``,
+    cfg : SimConfig
+        Typed configuration (must contain ``data.h5_path``,
         ``train.ckpt_dir``, ``train.amp``).
     ckpt_dir : str, optional
-        Overrides ``cfg["train"]["ckpt_dir"]`` (CLI ``--ckpt-dir``).
+        Overrides ``cfg.train.ckpt_dir`` (CLI ``--ckpt-dir``).
     no_wandb : bool, optional
         ``True`` disables wandb entirely (CLI ``--no-wandb``).
 
     Returns
     -------
-    dict
-        The same ``cfg`` dict, mutated in place.
+    SimConfig
+        The same ``cfg`` object, mutated in place.
     """
-    run = cfg.setdefault("run", {})
-    run["ckpt_dir"] = os.path.abspath(
-        ckpt_dir or cfg["train"].get("ckpt_dir", "checkpoints")
-    )
-    run["out_dir"] = os.path.abspath(cfg.get("eval", {}).get("out_dir", "results"))
-    run["h5_path"] = os.path.abspath(cfg["data"]["h5_path"])
-    run["device"] = "cuda" if torch.cuda.is_available() else "cpu"
-    run["rank"] = int(os.environ.get("LOCAL_RANK", "0"))
-    run["world_size"] = int(os.environ.get("WORLD_SIZE", "1"))
-    run["is_distributed"] = run["world_size"] > 1
-    run["amp"] = bool(cfg["train"].get("amp", False)) and run["device"] == "cuda"
-    run["no_wandb"] = bool(no_wandb) or os.environ.get("WANDB_MODE") == "disabled"
+    cfg.run.ckpt_dir = os.path.abspath(ckpt_dir or cfg.train.ckpt_dir)
+    cfg.run.out_dir = os.path.abspath(cfg.eval.out_dir)
+    cfg.run.h5_path = os.path.abspath(cfg.data.h5_path)
+    cfg.run.device = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg.run.rank = int(os.environ.get("LOCAL_RANK", "0"))
+    cfg.run.world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    cfg.run.is_distributed = cfg.run.world_size > 1
+    cfg.run.amp = bool(cfg.train.amp) and cfg.run.device == "cuda"
+    cfg.run.no_wandb = bool(no_wandb) or os.environ.get("WANDB_MODE") == "disabled"
     return cfg
 
 
@@ -171,61 +168,61 @@ def _worker_init_fn(base_seed: int) -> Callable[[int], None]:
 # --------------------------------------------------------------------------- #
 # Model / optimizer
 # --------------------------------------------------------------------------- #
-def build_model(cfg: dict) -> nn.Module:
-    """Build the CNN1 (or CNNL) model from ``cfg["model"]``.
+def build_model(cfg: SimConfig) -> nn.Module:
+    """Build the CNN1 (or CNNL) model from ``cfg.model``.
 
     Architecture per Sec 2.6: 3-stage CNN (3x3 conv, stride 1, padding 0,
     BatchNorm2d, ReLU, 2x2 MaxPool) -> AdaptiveAvgPool2d((18, 18)) -> flatten
     -> MLP of 4 hidden layers of 512 ReLU neurons -> ``n_modes`` outputs.
     """
-    m = cfg["model"]
-    name = m.get("name", "CNN1")
+    m = cfg.model
+    name = m.name
     kwargs: dict[str, Any] = dict(
-        n_modes=int(m["n_modes"]),
-        mlp_width=int(m.get("mlp_width", 512)),
-        mlp_depth=int(m.get("mlp_depth", 4)),
-        dropout=float(m.get("dropout", 0.0)),
+        n_modes=int(m.n_modes),
+        mlp_width=int(m.mlp_width),
+        mlp_depth=int(m.mlp_depth),
+        dropout=float(m.dropout),
     )
-    if "channels" in m:
-        kwargs["channels"] = tuple(int(c) for c in m["channels"])
-        kwargs.setdefault("pool_size", int(m.get("pool_size", 18)))
+    if m.channels is not None:
+        kwargs["channels"] = tuple(int(c) for c in m.channels)
+        kwargs.setdefault("pool_size", int(m.pool_size))
     if name == "CNN1":
         return CNN1(**kwargs)
     if name == "CNNL":
         return CNNL(**kwargs)
     if name == "CNN1Freq":
         freq_kwargs = dict(
-            freq_pool=int(m.get("freq_pool", 8)),
-            freq_refine_ch=int(m.get("freq_refine_ch", 16)),
+            freq_pool=int(m.freq_pool),
+            freq_refine_ch=int(m.freq_refine_ch),
         )
         return CNN1Freq(**kwargs, **freq_kwargs)
     if name == "CNN1Star":
         # CNN1Star uses base_dim/depths instead of channels, and its own
         # pool_size default (12), so it gets only the shared MLP kwargs.
         star_kwargs = dict(
-            n_modes=int(m["n_modes"]),
-            mlp_width=int(m.get("mlp_width", 512)),
-            mlp_depth=int(m.get("mlp_depth", 4)),
-            dropout=float(m.get("dropout", 0.0)),
-            base_dim=int(m.get("base_dim", 32)),
-            depths=tuple(int(d) for d in m.get("depths", (1, 1, 2))),
-            mlp_ratio=int(m.get("mlp_ratio", 4)),
-            use_se=bool(m.get("use_se", False)),
-            se_reduction=int(m.get("se_reduction", 16)),
-            pool_size=int(m.get("pool_size", 12)),
-            kernel=int(m.get("kernel", 3)),
+            n_modes=int(m.n_modes),
+            mlp_width=int(m.mlp_width),
+            mlp_depth=int(m.mlp_depth),
+            dropout=float(m.dropout),
+            base_dim=int(m.base_dim),
+            depths=tuple(int(d) for d in m.depths),
+            mlp_ratio=int(m.mlp_ratio),
+            use_se=bool(m.use_se),
+            se_reduction=int(m.se_reduction),
+            pool_size=int(m.pool_size),
+            kernel=int(m.kernel),
         )
         return CNN1Star(**star_kwargs)
     raise ValueError(f"unknown model name {name!r}")
 
 
-def build_optimizer(model: nn.Module, cfg: dict) -> torch.optim.Optimizer:
+def build_optimizer(model: nn.Module, cfg: SimConfig) -> torch.optim.Optimizer:
     """Adam optimizer per Table 1: lr 1e-4, betas (0.9, 0.999)."""
-    t = cfg["train"]
+    t = cfg.train
     return torch.optim.Adam(
         model.parameters(),
-        lr=float(t.get("lr", 1e-4)),
-        betas=(float(t.get("beta1", 0.9)), float(t.get("beta2", 0.999))),
+        lr=float(t.lr),
+        betas=(float(t.beta1), float(t.beta2)),
     )
 
 
@@ -257,7 +254,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     step: int,
-    cfg: dict,
+    cfg: SimConfig,
     *,
     rank: int,
     is_distributed: bool,
@@ -310,7 +307,7 @@ def load_checkpoint(
 _SIM_WORKER: dict[str, Any] = {"cfg": None, "shared": None}
 
 
-def _sim_worker_init(cfg: dict) -> None:
+def _sim_worker_init(cfg: SimConfig) -> None:
     """Pool initializer: build the physics stack once per worker."""
     _SIM_WORKER["cfg"] = cfg
     try:
@@ -338,18 +335,18 @@ class SimEvaluator:
     The Pool is created lazily on first use and reused across all eval calls
     ("reuse_workers"); each worker builds ``physics_from_cfg`` once via the
     initializer. Use ``spawn`` by default (safe with torch); ``fork`` may be
-    selected via ``cfg["train"]["sim_eval_context"]`` on Linux.
+    selected via ``cfg.train.sim_eval_context`` on Linux.
     """
 
-    def __init__(self, cfg: dict, processes: Optional[int] = None) -> None:
+    def __init__(self, cfg: SimConfig, processes: Optional[int] = None) -> None:
         self.cfg = cfg
-        self.processes = processes or int(cfg["train"].get("sim_eval_workers", 4))
+        self.processes = processes or int(cfg.train.sim_eval_workers)
         self._pool: Optional[multiprocessing.pool.Pool] = None
 
     def _ensure(self) -> None:
         if self._pool is not None:
             return
-        context = self.cfg["train"].get("sim_eval_context", "spawn")
+        context = self.cfg.train.sim_eval_context
         ctx = multiprocessing.get_context(context)
         self._pool = ctx.Pool(
             processes=self.processes,
@@ -376,7 +373,7 @@ class SimEvaluator:
 
 def evaluate_sim_fom(
     model: nn.Module,
-    cfg: dict,
+    cfg: SimConfig,
     *,
     device: Optional[torch.device] = None,
     use_pool: bool = True,
@@ -395,10 +392,10 @@ def evaluate_sim_fom(
     ----------
     model : nn.Module
         The trained model (predictions are made in eval mode).
-    cfg : dict
-        Full config; ``cfg["data"]["h5_path"]`` locates the dataset.
+    cfg : SimConfig
+        Full config; ``cfg.data.h5_path`` locates the dataset.
     device : torch.device, optional
-        Device for predictions (defaults to ``cfg["run"]["device"]`` or CPU).
+        Device for predictions (defaults to ``cfg.run.device`` or CPU).
     use_pool : bool
         ``True`` runs the simulation calls through the persistent Pool;
         ``False`` calls ``simulate_sample_fom`` in-process (test mode).
@@ -408,7 +405,7 @@ def evaluate_sim_fom(
         Receives the "sim eval unavailable" warning (defaults to ``print``).
     """
     if device is None:
-        device = torch.device(cfg.get("run", {}).get("device", "cpu"))
+        device = torch.device(cfg.run.device)
     if log_fn is None:
         log_fn = print
 
@@ -419,10 +416,9 @@ def evaluate_sim_fom(
         log_fn("sim eval unavailable (data.simulate not built); skipping")
         return None
 
-    run = cfg.get("run", {})
-    h5_path = run.get("h5_path") or cfg["data"]["h5_path"]
-    sim_eval_n = int(cfg["train"].get("sim_eval_n", 8))
-    amp = bool(run.get("amp", False))
+    h5_path = cfg.run.h5_path or cfg.data.h5_path
+    sim_eval_n = int(cfg.train.sim_eval_n)
+    amp = bool(cfg.run.amp)
 
     with h5py.File(h5_path, "r") as f:
         eval_idx = f["/eval_idx"][:sim_eval_n].astype(np.int64)
@@ -471,7 +467,7 @@ def evaluate_sim_fom(
     }
 
     # Optional live baseline sanity: z78-via-simulation through the same Pool.
-    if cfg["train"].get("sim_eval_z78", False):
+    if cfg.train.sim_eval_z78:
         z78_coeffs = [np.asarray(lr, dtype=np.float64) for lr in labels_raw]
         if use_pool:
             fom_z78_sim = evaluator.run(seeds, z78_coeffs)
@@ -488,7 +484,7 @@ def evaluate_sim_fom(
 # --------------------------------------------------------------------------- #
 # Training loop
 # --------------------------------------------------------------------------- #
-def train(cfg: dict) -> dict[str, Any]:
+def train(cfg: SimConfig) -> dict[str, Any]:
     """Run the training loop; returns a summary dict.
 
     Summary keys: ``losses`` (per-step MSE), ``step``, ``final_loss``,
@@ -500,23 +496,22 @@ def train(cfg: dict) -> dict[str, Any]:
     log cycle, ``best.pt`` on median sim-FOM improvement (fallback: lowest
     running train loss before the first sim eval).
     """
-    if "run" not in cfg:
-        attach_run(cfg)
-    run = cfg["run"]
-    rank = int(run["rank"])
-    world_size = int(run["world_size"])
-    is_dist = bool(run["is_distributed"])
-    device = torch.device(run["device"])
-    amp = bool(run["amp"])
-    t = cfg["train"]
-    n_steps = int(t["n_steps"])
-    batch_size = int(t["batch_size"])
-    micro_batch_size = int(t.get("micro_batch_size", batch_size))
+    attach_run(cfg)  # idempotent: re-derives run-time fields from cfg/env
+    run = cfg.run
+    rank = int(run.rank)
+    world_size = int(run.world_size)
+    is_dist = bool(run.is_distributed)
+    device = torch.device(run.device)
+    amp = bool(run.amp)
+    t = cfg.train
+    n_steps = int(t.n_steps)
+    batch_size = int(t.batch_size)
+    micro_batch_size = int(t.micro_batch_size)
     grad_accum = max(1, batch_size // micro_batch_size)
-    log_every = int(t.get("log_every", 10))
-    sim_eval_every = int(t.get("sim_eval_every", 500))
-    num_workers = int(t.get("num_workers", 4))
-    seed = int(t.get("seed", 0))
+    log_every = int(t.log_every)
+    sim_eval_every = int(t.sim_eval_every)
+    num_workers = int(t.num_workers)
+    seed = int(t.seed)
 
     # --- DDP init (auto-detected from torchrun env) ---
     if is_dist:
@@ -532,7 +527,7 @@ def train(cfg: dict) -> dict[str, Any]:
     np.random.seed(seed + rank)
 
     # --- Data ---
-    train_ds = BeaconlessH5Dataset(run["h5_path"], split="train")
+    train_ds = BeaconlessH5Dataset(run.h5_path, split="train")
     sampler = None
     shuffle = True
     if is_dist:
@@ -557,9 +552,9 @@ def train(cfg: dict) -> dict[str, Any]:
 
     # --- Model / optimizer / scaler ---
     model = build_model(cfg).to(device)
-    if t.get("channels_last", False) and device.type == "cuda":
+    if t.channels_last and device.type == "cuda":
         model = model.to(memory_format=torch.channels_last)
-    if t.get("compile", False):
+    if t.compile:
         model = torch.compile(model)
     if is_dist:
         model = nn.parallel.DistributedDataParallel(
@@ -571,9 +566,9 @@ def train(cfg: dict) -> dict[str, Any]:
 
     # --- Resume ---
     step = 0
-    if run.get("resume"):
+    if run.resume:
         step = load_checkpoint(
-            run["resume"],
+            run.resume,
             model,
             optimizer,
             scaler,
@@ -582,19 +577,19 @@ def train(cfg: dict) -> dict[str, Any]:
         )
         sync_barrier(is_dist)
         if rank == 0:
-            print(f"[train] resumed from {run['resume']} at step {step}")
+            print(f"[train] resumed from {run.resume} at step {step}")
 
     # --- WandB (rank 0 only) ---
     wandb_run = None
-    if rank == 0 and not run["no_wandb"]:
-        w = cfg.get("wandb", {})
-        if w.get("entity"):
-            os.environ["WANDB_ENTITY"] = str(w["entity"])
+    if rank == 0 and not run.no_wandb:
+        w = cfg.wandb
+        if w.entity:
+            os.environ["WANDB_ENTITY"] = str(w.entity)
         wandb_run = wandb_utils.init_wandb(
             config=cfg,
-            run_name=w.get("run_name"),
-            project=w.get("project", "beaconless-ao-sim"),
-            tags=w.get("tags"),
+            run_name=w.run_name,
+            project=w.project,
+            tags=w.tags,
             job_type="training",
         )
 
@@ -602,7 +597,7 @@ def train(cfg: dict) -> dict[str, Any]:
         wandb_utils.log_metrics(wandb_run, metrics, step=s)
 
     # --- Checkpoint paths ---
-    ckpt_dir = run["ckpt_dir"]
+    ckpt_dir = run.ckpt_dir
     last_path = os.path.join(ckpt_dir, "last.pt")
     best_path = os.path.join(ckpt_dir, "best.pt")
 
@@ -639,7 +634,7 @@ def train(cfg: dict) -> dict[str, Any]:
 
             images = batch["images"].to(device, non_blocking=True)
             target = batch["target"].to(device, non_blocking=True)
-            if t.get("channels_last", False) and device.type == "cuda":
+            if t.channels_last and device.type == "cuda":
                 images = images.to(memory_format=torch.channels_last)
 
             # Micro-batch forward/backward; gradient is scaled by 1/grad_accum
@@ -763,11 +758,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--resume", default=None, help="checkpoint to resume from")
     args = parser.parse_args(argv)
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(args.config)
     attach_run(cfg, ckpt_dir=args.ckpt_dir, no_wandb=args.no_wandb)
     if args.resume:
-        cfg["run"]["resume"] = os.path.abspath(args.resume)
+        cfg.run.resume = os.path.abspath(args.resume)
 
     train(cfg)
     return 0

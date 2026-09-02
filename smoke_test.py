@@ -32,12 +32,10 @@ from typing import Optional
 import h5py
 import numpy as np
 import torch
-import torch.nn as nn
-from PIL import Image as PILImage
-from torchvision.utils import make_grid
-
 import wandb
-import yaml
+from PIL import Image as PILImage
+from torch import nn
+from torchvision.utils import make_grid
 
 from evaluate import (
     attach_eval,
@@ -46,6 +44,7 @@ from evaluate import (
     load_checkpoint,
 )
 from models.cnn import count_parameters
+from physics.config import load_config
 
 IMAGE_MAX = 2047.0
 
@@ -153,7 +152,7 @@ def plane_grid(inputs: np.ndarray, device: torch.device, method: str) -> wandb.I
                        caption=method)
 
 
-def main(argv: Optional[list] = None) -> int:
+def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--ckpt", required=True)
@@ -163,7 +162,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--run-name", default="preprocessing-smoke-test")
     args = parser.parse_args(argv)
 
-    cfg = yaml.safe_load(open(args.config))
+    cfg = load_config(args.config)
     cfg = attach_eval(cfg, args.ckpt)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -171,15 +170,15 @@ def main(argv: Optional[list] = None) -> int:
     load_checkpoint(args.ckpt, model)
     model.to(device).eval()
 
-    data = load_raw_h5(cfg["data"]["h5_path"])
+    data = load_raw_h5(cfg.data.h5_path)
     eval_idx = data["eval_idx"][: args.n_samples]
     c_true = np.asarray(data["labels"], dtype=np.float32)[eval_idx]
     mu, sigma = data["mu"], data["sigma"]
 
     if not args.no_wandb:
         wandb.init(
-            project=cfg["wandb"]["project"],
-            entity=cfg["wandb"]["entity"],
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
             name=args.run_name,
             config={
                 "ckpt": args.ckpt,
@@ -250,6 +249,7 @@ def main(argv: Optional[list] = None) -> int:
                   for m, r in all_results.items()],
             columns=["method", "input_mean", "pred_rms", "rj_mean", "fom_ml_median"],
         )})
+        assert wandb.run is not None
         wandb.run.finish()
 
     print("SMOKE TEST DONE")

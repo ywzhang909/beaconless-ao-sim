@@ -21,20 +21,19 @@ import time
 
 import h5py
 import numpy as np
-import yaml
 
 from data.simulate import generate_dataset
+from physics.config import SimConfig, load_config
 
 
-def _load_cfg(path: str) -> dict:
-    """Load and return the YAML configuration dictionary.
+def _load_cfg(path: str) -> SimConfig:
+    """Load and return the typed configuration.
 
-    中文：读取并返回 YAML 配置字典。
+    中文：读取并返回类型化配置对象。
     参数 path: 配置文件路径（如 config.yaml）。
-    返回: 完整配置字典（含 physical / data / model / training 等节）。
+    返回: 完整配置对象（含 physical / data / model / training 等节）。
     """
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return load_config(path)
 
 
 def _print_summary(h5_path: str) -> None:
@@ -117,19 +116,19 @@ def main() -> None:
 
     if args.dry:
         # 干跑：打印物理参数、数据划分与输出路径，不触发生成
-        d = cfg["data"]
-        p = cfg["physical"]
-        n_total = d["n_train"] + d["n_test"] + d["n_eval"]  # 计划总样本数
+        d = cfg.data
+        p = cfg.physical
+        n_total = d.n_train + d.n_test + d.n_eval  # 计划总样本数
         print("DRY RUN (no generation):")
         print(f"  config: {args.config}")
-        print(f"  N={p['N']}, L={p['L']} m, cn2={p['cn2']:.3e}")
+        print(f"  N={p.N}, L={p.L} m, cn2={p.cn2:.3e}")
         print(
-            f"  splits: train={d['n_train']}, test={d['n_test']}, "
-            f"eval={d['n_eval']}  (N_total={n_total})"
+            f"  splits: train={d.n_train}, test={d.n_test}, "
+            f"eval={d.n_eval}  (N_total={n_total})"
         )
-        print(f"  workers={d['workers']}, master_seed={d['master_seed']}")
-        print(f"  h5_path={d['h5_path']}")
-        print(f"  config_json={json.dumps(cfg)[:120]}...")
+        print(f"  workers={d.workers}, master_seed={d.master_seed}")
+        print(f"  h5_path={d.h5_path}")
+        print(f"  config_json={json.dumps(cfg.to_dict())[:120]}...")
         return
 
     # 实际生成：计时并调用单趟流水线，随后打印摘要

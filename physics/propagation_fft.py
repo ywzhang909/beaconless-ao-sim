@@ -68,9 +68,7 @@ def _asm_host() -> Any:
     global _ASM_HOST
     if _ASM_HOST is None:
         if not _OOPAO_AVAILABLE:
-            raise RuntimeError(
-                "OOPAO 不可用：请先 `uv sync` 安装 oopao 依赖"
-            )
+            raise RuntimeError("OOPAO 不可用：请先 `uv sync` 安装 oopao 依赖")
         from physics._oopao_compat import Atmosphere, Source, Telescope
 
         tel = Telescope(resolution=8, diameter=1.0, fov=0.0, samplingTime=0.001)
@@ -242,7 +240,7 @@ class Propagator:
     def split_step(
         self,
         E_in: np.ndarray,
-        screens: Union[List[np.ndarray], np.ndarray],
+        screens: list[np.ndarray] | np.ndarray,
         dz: float,
     ) -> np.ndarray:
         """Symmetric split-step propagation through phase screens.
@@ -290,3 +288,124 @@ class Propagator:
         """
         E = self.propagate(E_in, z)
         return (np.abs(E) ** 2).astype(np.float32)
+
+    def fresnel_propagate(self, E_in: np.ndarray, z: float) -> np.ndarray:
+        """Fresnel (scaled-FFT) propagation — numerically stable for large z.
+
+        Uses the scaled-Fourier-Transform (chirp-Z / scaled-FFT) formulation of
+        Fresnel propagation, which keeps all quadratic phase terms in the
+        *spatial* domain where they are small (<< 2*pi per pixel even for
+        z ~ 2000 m and a 0.3 m grid at 800 nm) rather than in the frequency
+        domain where the ASM kernel ``exp(-i*pi*lambda*z*f^2)`` wraps millions
+        of times and loses float32 precision.
+
+        Mathematically identical to the exact angular-spectrum propagator in
+        the paraxial regime; numerically superior for the multi-plane imaging
+        distances (640–1920 m) used in this project.
+
+        Parameters
+        ----------
+        E_in : np.ndarray
+            Input complex field, shape (N, N).
+        z : float
+            Propagation distance (m); must be non-zero.
+
+        Returns
+        -------
+        np.ndarray
+            Propagated complex field, same dtype as ``E_in``.
+        """
+        if z == 0:
+            return np.array(E_in, dtype=self.dtype, copy=True)
+        N = E_in.shape[0]
+        lam = self.lam
+        k = 2.0 * np.pi / lam
+        dx = self.dx
+        # Quadratic phase pre/post-multiply (spatial domain — small argument).
+        vals = (np.arange(N) - (N - 1) / 2.0) * dx
+        x, y = np.meshgrid(vals, vals)
+        r2 = x**2 + y**2
+        pre = np.exp(1j * k * r2 / (2.0 * z)).astype(np.complex64)
+        post = np.exp(1j * k * r2 / (2.0 * z)).astype(np.complex64)
+        # FFT-based Fresnel propagation.
+        E = E_in.astype(np.complex64) * pre
+        E = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(E)))
+        E = E * post
+        # Physical scaling factor.
+        scale = (np.exp(1j * k * z) / (1j * lam * z)) * (dx**2)
+        return (E * scale).astype(self.dtype)
+
+    def fresnel_intensity(self, E_in: np.ndarray, z: float) -> np.ndarray:
+        """Return the Fresnel-propagated intensity ``|fresnel_propagate(E_in, z)|^2``.
+
+        Parameters
+        ----------
+        E_in : np.ndarray
+            Input complex field, shape (N, N).
+        z : float
+            Propagation distance (m).
+
+        Returns
+        -------
+        np.ndarray
+            Intensity, float32, shape (N, N).
+        """
+        E = self.fresnel_propagate(E_in, z)
+        return (np.abs(E) ** 2).astype(np.float32)
+
+    def fresnel_padded(
+        self, E_in: np.ndarray, z: float, N_pad: int
+    ) -> np.ndarray:
+        """Zero-padded scaled-FFT Fresnel propagation on an ``N_pad`` grid.
+
+        On the fixed aperture grid (``dx`` spacing), direct Fresnel propagation
+        to large distances (640–1920 m) maps many physical metres onto one
+        output pixel, so the focal Airy disk is severely undersampled (1-2 px)
+        and image quality is impossible to judge.  Zero-padding oversamples:
+        the input field (N×N) is zero-padded to ``N_pad``×``N_pad``, Fresnel
+        propagation is performed on the larger grid (scaled-FFT), and the
+        caller crops the central N×N.  The output pixel scale is
+        ``dx' = lam*z/(N_pad*dx)``; choosing ``N_pad(z) = lam*z/(dx'*dx)``
+        keeps ``dx'`` identical across measurement planes (one camera sensor).
+
+        中文：零填充 scaled-FFT Fresnel 传播（超采样）。固定孔径网格上直接
+        Fresnel 传播到远距离时输出像素对应物理尺寸过大，焦圆斑（Airy disk）
+        被严重欠采样（仅 1-2 像素）。零填充把输入场 N×N 填充到 N_pad×N_pad，
+        在更大网格上做 Fresnel 传播，再由调用方裁剪中心 N×N。输出像素尺度
+        dx' = λz/(N_pad·dx)，按 N_pad(z) = λz/(dx'·dx) 选取可使各平面 dx'
+        一致（同一相机传感器）。
+
+        Parameters
+        ----------
+        E_in : np.ndarray
+            Input complex field, shape (N, N).
+        z : float
+            Propagation distance (m).
+        N_pad : int
+            Zero-padded grid side length (>= input N).
+
+        Returns
+        -------
+        np.ndarray
+            Propagated complex field, shape (N_pad, N_pad) (un-cropped).
+        """
+        if z == 0:
+            return np.array(E_in, dtype=self.dtype, copy=True)
+        N0 = E_in.shape[0]
+        lam = self.lam
+        k = 2.0 * np.pi / lam
+        dx = self.dx
+        pad = (N_pad - N0) // 2
+        if pad < 0:
+            raise ValueError(f"N_pad ({N_pad}) must be >= input N ({N0})")
+        E = np.pad(E_in, ((pad, pad), (pad, pad)), mode="constant")
+        vals = (np.arange(N_pad) - (N_pad - 1) / 2.0) * dx
+        X, Y = np.meshgrid(vals, vals)
+        r2p = X**2 + Y**2
+        pre = np.exp(1j * k * r2p / (2.0 * z)).astype(np.complex64)
+        post = np.exp(1j * k * r2p / (2.0 * z)).astype(np.complex64)
+        E = E.astype(np.complex64) * pre
+        E = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(E)))
+        E = E * post
+        scale = (np.exp(1j * k * z) / (1j * lam * z)) * (dx**2)
+        return (E * scale).astype(self.dtype)

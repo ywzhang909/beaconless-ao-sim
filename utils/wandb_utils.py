@@ -10,16 +10,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import numpy as np
-
-try:
-    import wandb
-except Exception:  # pragma: no cover - wandb is a hard dependency
-    wandb = None  # type: ignore[assignment]
-
-try:
-    import torch
-except Exception:  # pragma: no cover - torch is a hard dependency
-    torch = None  # type: ignore[assignment]
+import torch
+import wandb
 
 
 def build_montage(images: np.ndarray, n_cols: int = 3) -> np.ndarray:
@@ -81,15 +73,18 @@ def build_montage(images: np.ndarray, n_cols: int = 3) -> np.ndarray:
 
 
 def init_wandb(
-    config: dict,
+    config: Any,
     run_name: str,
     project: str = "beaconless-ao-sim",
-    group: Optional[str] = None,
-    tags: Optional[list] = None,
+    group: str | None = None,
+    tags: list | None = None,
     job_type: str = "training",
-    mode: Optional[str] = None,
+    mode: str | None = None,
 ) -> Any:
     """Initialize a wandb run, falling back to offline or None on any failure.
+
+    Accepts either a plain ``dict`` or a ``SimConfig`` dataclass; normalises
+    to a plain dict internally (``wandb.init(config=...)`` requires a dict).
 
     Attempts ``wandb.login(anonymous='never', force=False)`` first (auth via
     ``~/.netrc``). If login raises or returns False, mode is forced to
@@ -100,6 +95,9 @@ def init_wandb(
     """
     if wandb is None:
         return None
+
+    # Normalise: SimConfig dataclass -> plain dict for wandb.init.
+    config_dict = config.to_dict() if hasattr(config, "to_dict") else config
 
     effective_mode = mode
     try:
@@ -116,14 +114,14 @@ def init_wandb(
             group=group,
             tags=tags,
             job_type=job_type,
-            config=config,
+            config=config_dict,
             mode=effective_mode,
         )
     except Exception:
         return None
 
 
-def log_gpu_stats(run: Any, step: Optional[int] = None) -> None:
+def log_gpu_stats(run: Any, step: int | None = None) -> None:
     """Log GPU utilization and memory usage if CUDA is available and run is set."""
     if run is None or torch is None:
         return
@@ -145,7 +143,7 @@ def log_gpu_stats(run: Any, step: Optional[int] = None) -> None:
         pass
 
 
-def log_metrics(run: Any, metrics: dict, step: Optional[int] = None) -> None:
+def log_metrics(run: Any, metrics: dict, step: int | None = None) -> None:
     """Log a metrics dict to the run, optionally with a step."""
     if run is None:
         return
@@ -155,7 +153,7 @@ def log_metrics(run: Any, metrics: dict, step: Optional[int] = None) -> None:
         pass
 
 
-def log_figure(run: Any, fig: Any, name: str, step: Optional[int] = None) -> None:
+def log_figure(run: Any, fig: Any, name: str, step: int | None = None) -> None:
     """Log a matplotlib Figure as a wandb.Image. Never raises."""
     if run is None or fig is None:
         return

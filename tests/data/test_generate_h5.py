@@ -13,11 +13,12 @@ import numpy as np
 import pytest
 
 from data.simulate import generate_dataset, physics_from_cfg, simulate_sample
+from physics.config import SimConfig
 
 
-def tiny_cfg(tmp_path) -> dict:
+def tiny_cfg(tmp_path) -> SimConfig:
     """Small config: N=64, n_train=4, n_test=2, n_eval=2, workers=2."""
-    return {
+    return SimConfig.from_dict({
         "physical": {
             "cn2": 8.13e-15,
             "l0_sim": 0.01,
@@ -50,7 +51,7 @@ def tiny_cfg(tmp_path) -> dict:
             "workers": 2,
             "h5_path": str(tmp_path / "test.h5"),
         },
-    }
+    })
 
 
 def test_generate_dataset_schema(tmp_path):
@@ -59,10 +60,10 @@ def test_generate_dataset_schema(tmp_path):
     h5_path = generate_dataset(cfg)
     assert os.path.exists(h5_path)
 
-    N = cfg["physical"]["N"]
+    N = cfg.physical.N
     n_train, n_test, n_eval = 4, 2, 2
     N_total = n_train + n_test + n_eval
-    L = cfg["physical"]["L"]
+    L = cfg.physical.L
 
     with h5py.File(h5_path, "r") as f:
         # shapes / dtypes
@@ -113,7 +114,7 @@ def test_generate_dataset_schema(tmp_path):
         shared = physics_from_cfg(cfg)
         raw = np.zeros((N_total, 3, N, N), dtype=np.float32)
         for i in range(N_total):
-            s = simulate_sample(cfg["data"]["master_seed"] + i, cfg, shared=shared)
+            s = simulate_sample(cfg.data.master_seed + i, cfg, shared=shared)
             raw[i] = s.images
         train_raw = raw[f["train_idx"][:]]
         np.testing.assert_allclose(

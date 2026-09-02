@@ -135,6 +135,58 @@ CUDA_VISIBLE_DEVICES=1 uv run python smoke_test.py --config config.yaml --ckpt c
 
 ## 核心结果（OOPAO 数据集）
 
+### FOM 含义、公式与意义
+
+**FOM**（Figure of Merit，公式 8）是本仿真的核心性能指标，它将激光在光瓶内的集中程度衡量为一个标量：
+
+```
+FOM = sqrt(nPIB × SIB)
+```
+
+其中两个分量独立衡量不同维度的对焦质量：
+
+- **nPIB**（normalized Power-In-Bucket，公式 6）：光瓶内功率占总功率的比值，
+  相比真空对焦光斑归一化：
+
+  ```
+  nPIB = (Σ I[mask] / Σ I) / (Σ I_vac[mask] / Σ I_vac)
+  ```
+
+  `mask` 是光瓶区域（半径 ~ 1.2 λf/D）。nPIB ≈ 1 表示所有能量都落到光瓶中
+  （完美对焦）；nPIB < 1 表示大量能量散出光瓶边缘（湍流失焦）。
+
+- **SIB**（Strehl-like Intensity in Bucket，公式 7）：光瓶内峰值强度相比真空
+  峰值的比值：
+
+  ```
+  SIB = max(I[mask]) / max(I_vac[mask])
+  ```
+
+  SIB ≈ 1 表示光瓶中心亮度接近真空 diffraction-limited 理论值（Strehl ≈ 1）；
+  SIB < 1 表示信标中心被湍流斑点拉低。
+
+FOM ∈ [0, 1]。**1 = 完美**（达到无湍流真空对焦水平），**0 = 全能量丢失光瓶**。
+
+### 各分支含义
+
+| 分支 | 说明 | 物理意义 |
+|------|------|----------|
+| **noao** | 仅聚焦相位 `phi_focus`，无任何 AO 校正 | 湍流失焦基线；FOM ≈ 0.28 |
+| **track** | 加上倾斜移除 `phi_track` | 比 noao 略好，但仍被高阶 aberration 限制 |
+| **beacon** | 信标共轭 `phi_beacon = phi_conj - phi_track` | 完整自适应光学校正的理论上界；FOM ≈ 0.93 |
+| **z78** | 78 阶 Zernike 重构 `phi_z78` | beacon 相位被 78 阶 Zernike 投影/截断后的近似 |
+| **ML** | CNN1 预测的 Zernike 系数重构 | 端到端 ML 替代信标信标 → FOM ≈ 0.54 |
+
+### 增益与 CNN 有效率
+
+- **增益** `g = FOM_ML / FOM_track`（公式 15）：ML 分支相比仅跟踪基线的 FOM 改进倍数。g=1.90 表示 ML 校正使光瓶性能将近翻倍，相当于**将激光能量增加 90%**。
+
+- **η** `(FOM_ML - FOM_track) / (FOM_z78 - FOM_track)`（公式 16）：ML 分支相对
+  可能实现范围所占的比例。η=0.43 表示 CNN 达到了理论上界（z78）的 43%，
+  离完整信标校正（beacon, FOM≈0.93）还有较大差距。
+
+### 结果
+
 | 分支 | 中位 FOM |
 |------|----------|
 | noao / track | 0.28 |

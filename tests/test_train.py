@@ -21,6 +21,7 @@ import torch
 import yaml
 
 import train
+from physics.config import load_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -86,19 +87,18 @@ def tiny_h5(tmp_path):
 @pytest.fixture
 def tiny_cfg(tmp_path, tiny_h5):
     """Full config.yaml with a tiny model / tiny training schedule monkeypatched in."""
-    with open(os.path.join(REPO_ROOT, "config.yaml")) as f:
-        cfg = yaml.safe_load(f)
-    cfg["data"]["h5_path"] = str(tiny_h5)
-    cfg["model"]["channels"] = [8, 16, 32]
-    cfg["model"]["mlp_width"] = 64
-    cfg["train"]["n_steps"] = 10
-    cfg["train"]["batch_size"] = 8
-    cfg["train"]["amp"] = False
-    cfg["train"]["mixed_precision"] = False
-    cfg["train"]["num_workers"] = 0
-    cfg["train"]["log_every"] = 10
-    cfg["train"]["sim_eval_every"] = 10**9  # never during the 10-step run
-    cfg["train"]["ckpt_dir"] = str(tmp_path / "ckpt")
+    cfg = load_config(os.path.join(REPO_ROOT, "config.yaml"))
+    cfg.data.h5_path = str(tiny_h5)
+    cfg.model.channels = [8, 16, 32]
+    cfg.model.mlp_width = 64
+    cfg.train.n_steps = 10
+    cfg.train.batch_size = 8
+    cfg.train.amp = False
+    cfg.train.mixed_precision = False
+    cfg.train.num_workers = 0
+    cfg.train.log_every = 10
+    cfg.train.sim_eval_every = 10**9  # never during the 10-step run
+    cfg.train.ckpt_dir = str(tmp_path / "ckpt")
     return cfg
 
 
@@ -163,17 +163,17 @@ def test_dataloader_batch_shapes(tiny_h5):
 def test_attach_run_sets_paths(tmp_path, tiny_cfg):
     """attach_run sets ckpt_dir / h5_path / device / rank / amp on the cfg."""
     cfg = copy.deepcopy(tiny_cfg)
-    cfg["train"]["ckpt_dir"] = str(tmp_path / "ckpt")
+    cfg.train.ckpt_dir = str(tmp_path / "ckpt")
     out = train.attach_run(cfg, ckpt_dir=str(tmp_path / "ckpt"))
-    assert out is cfg  # mutates and returns the same dict
-    run = cfg["run"]
-    assert run["ckpt_dir"] == os.path.abspath(str(tmp_path / "ckpt"))
-    assert run["h5_path"] == os.path.abspath(str(tiny_cfg["data"]["h5_path"]))
-    assert run["rank"] == 0
-    assert run["world_size"] == 1
-    assert run["is_distributed"] is False
-    assert run["amp"] is False  # amp=False in tiny cfg
-    assert run["device"] in ("cuda", "cpu")
+    assert out is cfg  # mutates and returns the same object
+    run = cfg.run
+    assert run.ckpt_dir == os.path.abspath(str(tmp_path / "ckpt"))
+    assert run.h5_path == os.path.abspath(str(tiny_cfg.data.h5_path))
+    assert run.rank == 0
+    assert run.world_size == 1
+    assert run.is_distributed is False
+    assert run.amp is False  # amp=False in tiny cfg
+    assert run.device in ("cuda", "cpu")
 
 
 # --------------------------------------------------------------------------- #
@@ -182,7 +182,7 @@ def test_attach_run_sets_paths(tmp_path, tiny_cfg):
 def test_loss_decreases_over_steps(tmp_path, tiny_cfg):
     """10 training steps on random data must reduce the MSE loss."""
     cfg = copy.deepcopy(tiny_cfg)
-    cfg["train"]["ckpt_dir"] = str(tmp_path / "ckpt")
+    cfg.train.ckpt_dir = str(tmp_path / "ckpt")
     result = train.train(cfg)
     assert result["step"] == 10
     assert len(result["losses"]) == 10
@@ -193,11 +193,11 @@ def test_loss_decreases_over_steps(tmp_path, tiny_cfg):
 def test_checkpoint_file_with_expected_keys(tmp_path, tiny_cfg):
     """last.pt appears with {model_state, optimizer_state, scaler_state, step, cfg}."""
     cfg = copy.deepcopy(tiny_cfg)
-    cfg["train"]["ckpt_dir"] = str(tmp_path / "ckpt")
+    cfg.train.ckpt_dir = str(tmp_path / "ckpt")
     train.train(cfg)
     ckpt_path = tmp_path / "ckpt" / "last.pt"
     assert ckpt_path.exists()
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     assert set(ckpt.keys()) == {
         "model_state",
         "optimizer_state",
@@ -213,10 +213,10 @@ def test_checkpoint_file_with_expected_keys(tmp_path, tiny_cfg):
 def test_deterministic_rerun_identical_losses(tmp_path, tiny_cfg):
     """Same seed -> identical loss trajectory across two independent runs."""
     cfg1 = copy.deepcopy(tiny_cfg)
-    cfg1["train"]["ckpt_dir"] = str(tmp_path / "ckpt1")
+    cfg1.train.ckpt_dir = str(tmp_path / "ckpt1")
     res1 = train.train(cfg1)
     cfg2 = copy.deepcopy(tiny_cfg)
-    cfg2["train"]["ckpt_dir"] = str(tmp_path / "ckpt2")
+    cfg2.train.ckpt_dir = str(tmp_path / "ckpt2")
     res2 = train.train(cfg2)
     assert res1["losses"] == pytest.approx(res2["losses"], abs=1e-12)
 
@@ -225,7 +225,7 @@ def test_wandb_disabled_no_crash(tmp_path, tiny_cfg):
     """WANDB_MODE=disabled -> train runs to completion with no network."""
     os.environ["WANDB_MODE"] = "disabled"
     cfg = copy.deepcopy(tiny_cfg)
-    cfg["train"]["ckpt_dir"] = str(tmp_path / "ckpt")
+    cfg.train.ckpt_dir = str(tmp_path / "ckpt")
     result = train.train(cfg)
     assert result["step"] == 10
     assert result["final_loss"] is not None
@@ -259,7 +259,7 @@ def test_sim_eval_invokes_stub(monkeypatch, tiny_cfg, tiny_h5):
     monkeypatch.setitem(sys.modules, "data.simulate", fake)
 
     cfg = copy.deepcopy(tiny_cfg)
-    cfg["train"]["sim_eval_n"] = 4
+    cfg.train.sim_eval_n = 4
     model = train.build_model(cfg)
     result = train.evaluate_sim_fom(
         model, cfg, device=torch.device("cpu"), use_pool=False
@@ -282,23 +282,31 @@ def test_sim_eval_invokes_stub(monkeypatch, tiny_cfg, tiny_h5):
 @pytest.mark.skipif(
     shutil.which("torchrun") is None, reason="torchrun not available"
 )
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "torchrun elastic rendezvous on Windows builds TCPStore with the "
+        "libuv backend by default, but official Windows torch wheels are built "
+        "without libuv support (pytorch/pytorch#148283). DDP smoke requires "
+        "Linux/WSL2; single-GPU training works on Windows."
+    ),
+)
 def test_ddp_smoke(tmp_path, tiny_h5):
     """torchrun --nproc_per_node=2 train.py completes and writes last.pt."""
-    with open(os.path.join(REPO_ROOT, "config.yaml")) as f:
-        cfg = yaml.safe_load(f)
-    cfg["data"]["h5_path"] = str(tiny_h5)
-    cfg["model"]["channels"] = [8, 16, 32]
-    cfg["model"]["mlp_width"] = 64
-    cfg["train"]["n_steps"] = 4
-    cfg["train"]["batch_size"] = 8
-    cfg["train"]["amp"] = False
-    cfg["train"]["num_workers"] = 0
-    cfg["train"]["log_every"] = 2
-    cfg["train"]["sim_eval_every"] = 10**9
-    cfg["train"]["ckpt_dir"] = str(tmp_path / "ckpt_ddp")
+    cfg = load_config(os.path.join(REPO_ROOT, "config.yaml"))
+    cfg.data.h5_path = str(tiny_h5)
+    cfg.model.channels = [8, 16, 32]
+    cfg.model.mlp_width = 64
+    cfg.train.n_steps = 4
+    cfg.train.batch_size = 8
+    cfg.train.amp = False
+    cfg.train.num_workers = 0
+    cfg.train.log_every = 2
+    cfg.train.sim_eval_every = 10**9
+    cfg.train.ckpt_dir = str(tmp_path / "ckpt_ddp")
     cfg_path = tmp_path / "ddp_cfg.yaml"
     with open(cfg_path, "w") as f:
-        yaml.safe_dump(cfg, f)
+        yaml.safe_dump(cfg.to_dict(), f)
 
     env = dict(os.environ)
     env["WANDB_MODE"] = "disabled"

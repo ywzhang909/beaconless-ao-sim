@@ -18,11 +18,12 @@ from data.simulate import (
     simulate_sample_fom,
     vacuum_intensity,
 )
+from physics.config import SimConfig
 
 
-def make_cfg(N: int = 64, n_screens: int = 2, screen_sep: float = 500.0) -> dict:
+def make_cfg(N: int = 64, n_screens: int = 2, screen_sep: float = 500.0) -> SimConfig:
     """Build a small, fast configuration for tests (paper-faithful values)."""
-    return {
+    return SimConfig.from_dict({
         "physical": {
             "cn2": 8.13e-15,
             "l0_sim": 0.01,
@@ -55,7 +56,7 @@ def make_cfg(N: int = 64, n_screens: int = 2, screen_sep: float = 500.0) -> dict
             "workers": 2,
             "h5_path": "/tmp/test.h5",
         },
-    }
+    })
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +107,7 @@ def test_screens_deterministic():
 def test_shapes_types():
     """images (3,N,N) float32 finite non-negative; labels (78,); foms in (0,2]."""
     cfg = make_cfg()
-    N = cfg["physical"]["N"]
+    N = cfg.physical.N
     s = simulate_sample(0, cfg)
     assert isinstance(s, SimSample)
     assert s.images.shape == (3, N, N)
@@ -185,7 +186,7 @@ def test_bucket_mask_diameter():
 def test_vacuum_intensity():
     """|propagate|^2 of the focused Gaussian in vacuum peaks near center, finite."""
     cfg = make_cfg()
-    N = cfg["physical"]["N"]
+    N = cfg.physical.N
     I_vac = vacuum_intensity(cfg)
     assert I_vac.shape == (N, N)
     assert I_vac.dtype == np.float32

@@ -142,6 +142,41 @@ flowchart LR
 `D/r0 ≈ 7.4` → 强湍流；78 阶上界接近跟踪基准（信标强度零点产生的相位支点
 点使得任何 78 阶相位共轭器都无法指令）。
 
+### 1.6 仿真问题与修复
+
+#### 问题 1：回波光强分布错误
+
+**现象**：成像步骤 (_imaging) 使用 `I_vac` (真空光斑，无湍流) 作为回波源振幅，
+但回波应该携带湍流调制的强度分布。
+
+**修复**：
+- **源振幅**：`I_spot = I_obj_track` (Forward-path 强度，通过湍流屏 + 跟踪相位)
+  而非 `shared.I_vac` (真空光斑)
+- **源相位**：`phi_r = np.zeros((N, N), dtype=np.float32)` (均匀零相位)
+  而非随机 roughness 相位。回波的湍流相位应**仅通过** H.1 步的反向传播引入
+  (复用逆序湍流屏 `screens[::-1]`，`-dz`)
+- **移除**不再使用的 `random_roughness_phase` 导入
+
+**物理原理**：湍流对回波的影响应该是 round-trip (forward + backward through same
+atmosphere)，不能在源相位上直接叠加随机 phase。否则会 double-counting 湍流
+相位，产生不一致的 round-trip。
+
+#### 问题 2：：Fresnel 传播大距离 float32 精度丢失
+
+**现象**：`angular_spectrum_intensity` 在大距离 (640–1920 m) 下失效，
+kernel `exp(-i·π·λ·z·f²)` 在 float32 下 wraps 数百万次。
+
+**修复**：改用 `fresnel_intensity` (scaled-FFT 施密特公式)，
+将 quadratic 相位保留在空间域 (小参数), bit-identical to ASM in paraxial regime。
+
+#### 问题 4：OOPAO 屏幕 r0 缩放 4.8×过驱
+
+**现象**：初始使用朴素的 PSD 归一化 `(r0_slab / r0_ref)^(5/6)` 缩放，
+OOPAO 屏幕被过度驱动 4.8×。
+
+**修复**：OOOAPAO 在 500 nm 下表达 r0 且 OPD 以弧度为单位，
+需进行正确的 PSD 归一化修正，通过测量参考 r0 下的每层 OPD 标准差修复。
+
 ---
 
 ## 2. 模型

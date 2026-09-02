@@ -26,11 +26,12 @@ from physics.engine import (
     MeasurementSource,
     PhysicsEngine,
 )
+from physics.config import SimConfig
 
 
-def make_cfg(N: int = 64, n_screens: int = 2, screen_sep: float = 500.0) -> dict:
+def make_cfg(N: int = 64, n_screens: int = 2, screen_sep: float = 500.0) -> SimConfig:
     """Small, fast configuration matching tests/data/test_simulate.py."""
-    return {
+    return SimConfig.from_dict({
         "physical": {
             "cn2": 8.13e-15,
             "l0_sim": 0.01,
@@ -63,7 +64,7 @@ def make_cfg(N: int = 64, n_screens: int = 2, screen_sep: float = 500.0) -> dict
             "workers": 2,
             "h5_path": "/tmp/test_engine.h5",
         },
-    }
+    })
 
 
 def test_engine_is_abstract():
@@ -148,7 +149,7 @@ def test_engine_from_shared_adapter():
 def test_simulated_measurement_source_acquires():
     """SimulatedMeasurementSource.acquire returns (3, N, N) images + I_obj."""
     cfg = make_cfg()
-    N = cfg["physical"]["N"]
+    N = cfg.physical.N
     engine = SimulatedPhysicsEngine(cfg)
     src = SimulatedMeasurementSource(engine, cfg)
     screens = engine.make_screens(0)
@@ -219,7 +220,7 @@ def test_hardware_source_rejects_bad_shape():
 def test_engine_injected_sample_matches():
     """simulate_sample with a hardware measurement returns the camera frames."""
     cfg = make_cfg()
-    N = cfg["physical"]["N"]
+    N = cfg.physical.N
     rng = np.random.default_rng(1)
     frames = rng.random((3, N, N), dtype=np.float64).astype(np.float32)
     hw = HardwareMeasurementSource(frames, target_N=N)

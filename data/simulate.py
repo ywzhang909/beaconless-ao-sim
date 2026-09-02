@@ -50,6 +50,7 @@ from numba import njit
 from aotools.turbulence.phasescreen import ft_sh_phase_screen
 from tqdm import tqdm
 
+from physics.config import SimConfig
 from physics.engine import (
     HardwareMeasurementSource,
     MeasurementSource,
@@ -140,51 +141,51 @@ class SharedSim:
 _shared_cache: dict[tuple, SharedSim] = {}
 
 
-def _cfg_key(cfg: dict) -> tuple:
+def _cfg_key(cfg: SimConfig) -> tuple:
     """Hashable key identifying the physical/imaging/bucket configuration.
 
     中文：返回一个可哈希的元组，唯一标识物理/成像/桶配置。
     任一字段变化都会改变该键，从而触发共享状态重建（避免复用错误的缓存）。
     """
-    p = cfg["physical"]
-    img = cfg["imaging"]
-    b = cfg["bucket"]
+    p = cfg.physical
+    img = cfg.imaging
+    b = cfg.bucket
     return (
-        p["N"],
-        p["box_size"],
-        p["wavelength"],
-        p["Dscope"],
-        p["rspot"],
-        p["focal"],
-        p["L"],
-        p["cn2"],
-        p["l0_sim"],
-        p["L0"],
-        p["screen_sep"],
-        str(p.get("beam_source", "soapy")).lower(),
-        img["zR_APWS"],
-        img["f_obj"],
-        tuple(img["plane_offset_frac"]),
-        b["diameter_frac"],
+        p.N,
+        p.box_size,
+        p.wavelength,
+        p.Dscope,
+        p.rspot,
+        p.focal,
+        p.L,
+        p.cn2,
+        p.l0_sim,
+        p.L0,
+        p.screen_sep,
+        str(p.beam_source).lower(),
+        img.zR_APWS,
+        img.f_obj,
+        tuple(img.plane_offset_frac),
+        b.diameter_frac,
     )
 
 
-def _build_shared(cfg: dict) -> SharedSim:
+def _build_shared(cfg: SimConfig) -> SharedSim:
     """构建每进程共享的仿真状态（跨样本复用，仅构建一次）。"""
-    p = cfg["physical"]   # 物理参数节（湍流 / 光学 / 仿真，论文表 1）
-    img = cfg["imaging"]  # 成像几何节（z_R_APWS / f_obj / 平面偏移）
-    b = cfg["bucket"]     # FOM 桶参数节（桶直径分数，公式 6）
+    p = cfg.physical  # 物理参数节（湍流 / 光学 / 仿真，论文表 1）
+    img = cfg.imaging  # 成像几何节（z_R_APWS / f_obj / 平面偏移）
+    b = cfg.bucket  # FOM 桶参数节（桶直径分数，公式 6）
 
     # --- 从配置解析基本量 ---
-    N = int(p["N"])               # 网格分辨率（N×N 像素，表 1 = 512）
-    box = float(p["box_size"])    # 计算盒边长 [m]（表 1 = 0.30 m）
-    dx = box / N                  # 像素间距 [m]
-    lam = float(p["wavelength"])  # 中心波长 [m]（表 1 = 800 nm）
-    k = 2.0 * np.pi / lam         # 波数 k = 2π/λ [rad/m]
-    rspot = float(p["rspot"])     # 初始光束半径 [m]（表 1 = 7.5 cm）
-    focal = float(p["focal"])     # 聚焦焦距 f [m]（表 1 取 f = L = 1000 m）
-    L = float(p["L"])             # 传播距离 [m]（表 1 = 1000 m）
-    Dscope = float(p["Dscope"])   # 望远镜口径 [m]（表 1 = 0.30 m）
+    N = int(p.N)  # 网格分辨率（N×N 像素，表 1 = 512）
+    box = float(p.box_size)  # 计算盒边长 [m]（表 1 = 0.30 m）
+    dx = box / N  # 像素间距 [m]
+    lam = float(p.wavelength)  # 中心波长 [m]（表 1 = 800 nm）
+    k = 2.0 * np.pi / lam  # 波数 k = 2π/λ [rad/m]
+    rspot = float(p.rspot)  # 初始光束半径 [m]（表 1 = 7.5 cm）
+    focal = float(p.focal)  # 聚焦焦距 f [m]（表 1 取 f = L = 1000 m）
+    L = float(p.L)  # 传播距离 [m]（表 1 = 1000 m）
+    Dscope = float(p.Dscope)  # 望远镜口径 [m]（表 1 = 0.30 m）
 
     # 传播器（FFTW 分步）与 78 阶 Zernike 基底 —— 重计算量，跨样本共享
     prop = Propagator(N, dx, lam)
@@ -217,40 +218,40 @@ def _build_shared(cfg: dict) -> SharedSim:
     #   r0 = (0.423 k^2 Cn^2 L)^(-3/5)（公式 11，大气相干长度）
     #   z_R_APWS = r0^2/(π λ)（公式 12 耦合方程解析解）
     #   f_obj = 2 z_R_APWS（公式 12）
-    r0 = compute_r0(lam, float(p["cn2"]), L)
-    zR_APWS = img["zR_APWS"] if img["zR_APWS"] is not None else r0**2 / (np.pi * lam)
-    f_obj = img["f_obj"] if img["f_obj"] is not None else 2.0 * zR_APWS
+    r0 = compute_r0(lam, float(p.cn2), L)
+    zR_APWS = img.zR_APWS if img.zR_APWS is not None else r0**2 / (np.pi * lam)
+    f_obj = img.f_obj if img.f_obj is not None else 2.0 * zR_APWS
     # 三个测量平面距物镜的距离（plane_offset_frac 给出相对 f_obj 的 zR 倍数）
     plane_offsets = np.array(
-        [f_obj + (frac - 1.0) * zR_APWS for frac in img["plane_offset_frac"]],
+        [f_obj + (frac - 1.0) * zR_APWS for frac in img.plane_offset_frac],
         dtype=np.float64,
     )
 
     # FOM 桶掩膜（公式 6）：D_bucket = diameter_frac · L · λ / Dscope
-    D_bucket = float(b["diameter_frac"]) * L * lam / Dscope
+    D_bucket = float(b.diameter_frac) * L * lam / Dscope
     diameter_px = D_bucket / dx
     bmask = bucket_mask(N, diameter_px)
 
     # OOPAO screen backend (beam_source == "oopao"); None otherwise. Built once
     # per process and shared across samples.
     oopao = None
-    if str(p.get("beam_source", "soapy")).lower() == "oopao":
+    if str(p.beam_source).lower() == "oopao":
         oopao = OopaoScreenBackend(
             N=N,
             dx=dx,
             Dscope=Dscope,
             lam=lam,
-            cn2=float(p["cn2"]),
+            cn2=float(p.cn2),
             L=L,
-            L0=float(p["L0"]),
-            n_screens=int(p["n_screens"]),
+            L0=float(p.L0),
+            n_screens=int(p.n_screens),
         )
 
     return SharedSim(
         prop=prop,
         zern=zern,
         bucket_mask=bmask,
-        dz=float(p["screen_sep"]),
+        dz=float(p.screen_sep),
         N=N,
         dx=dx,
         lam=lam,
@@ -272,11 +273,11 @@ def _build_shared(cfg: dict) -> SharedSim:
     )
 
 
-def _get_shared(cfg: dict) -> SharedSim:
+def _get_shared(cfg: SimConfig) -> SharedSim:
     """Return the cached shared state for ``cfg``, building it if needed.
 
     中文：返回 ``cfg`` 对应的缓存共享状态，若未缓存则先构建。
-    参数 cfg: 配置字典（见 config.yaml）。
+    参数 cfg: 配置对象（见 config.yaml）。
     """
     key = _cfg_key(cfg)
     if key not in _shared_cache:
@@ -284,7 +285,7 @@ def _get_shared(cfg: dict) -> SharedSim:
     return _shared_cache[key]
 
 
-def _resolve_shared(shared: Any, cfg: dict) -> SharedSim:
+def _resolve_shared(shared: Any, cfg: SimConfig) -> SharedSim:
     """Resolve the ``shared`` argument to a :class:`SharedSim`.
 
     Accepts ``None`` (build/cache from ``cfg``), a :class:`SharedSim`, or the
@@ -302,14 +303,14 @@ def _resolve_shared(shared: Any, cfg: dict) -> SharedSim:
     return _get_shared(cfg)
 
 
-def physics_from_cfg(cfg: dict) -> tuple:
+def physics_from_cfg(cfg: SimConfig) -> tuple:
     """Build (once per process) and return ``(Propagator, ZernikeBasis, bucket_mask_2d, dz)``.
 
     Parameters
     ----------
-    cfg : dict
-        Configuration dictionary (see config.yaml).
-        中文：配置字典（见 config.yaml，含 physical / imaging / bucket 三节）。
+    cfg : SimConfig
+        Configuration object (see config.yaml).
+        中文：配置对象（见 config.yaml，含 physical / imaging / bucket 三节）。
 
     Returns
     -------
@@ -334,14 +335,14 @@ def bucket_mask_nd(diameter_px: float, N: int) -> np.ndarray:
     return bucket_mask(N, diameter_px)
 
 
-def vacuum_intensity(cfg: dict, shared: Any = None) -> np.ndarray:
+def vacuum_intensity(cfg: SimConfig, shared: Any = None) -> np.ndarray:
     """Return the vacuum object-plane intensity ``|propagate(E0 e^{i phi_focus}, L)|^2``.
 
     Parameters
     ----------
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典（见 config.yaml）。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象（见 config.yaml）。
     shared : SharedSim or tuple, optional
         Prebuilt shared state (avoids rebuild).
         中文：预构建的共享状态（传入可避免重复构建，None 则从 cfg 取缓存）。
@@ -359,7 +360,7 @@ def vacuum_intensity(cfg: dict, shared: Any = None) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Per-sample helpers
 # --------------------------------------------------------------------------- #
-def _make_screens(seed: int, cfg: dict, shared: Any) -> np.ndarray:
+def _make_screens(seed: int, cfg: SimConfig, shared: Any) -> np.ndarray:
     """Generate ``n_screens`` deterministic turbulence phase screens.
 
     Uses aotools ``ft_sh_phase_screen`` directly (Soapy's wrapper is not
@@ -375,9 +376,9 @@ def _make_screens(seed: int, cfg: dict, shared: Any) -> np.ndarray:
     seed : int
         Sample seed.
         中文：样本种子（样本种子 = master_seed + sample_index）。
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象。
     shared : SharedSim or tuple
         Shared state (provides N, dx, L0, l0_sim, lam).
         中文：共享状态（提供 N, dx, L0, l0_sim, lam 等）。
@@ -389,7 +390,7 @@ def _make_screens(seed: int, cfg: dict, shared: Any) -> np.ndarray:
         中文：(n_screens, N, N) float32 相位屏，单位 rad。
     """
     shared = _resolve_shared(shared, cfg)
-    p = cfg["physical"]
+    p = cfg.physical
 
     if shared.oopao is not None:
         # OOPAO path: per-layer screens drawn from the shared OOPAO Atmosphere,
@@ -398,7 +399,7 @@ def _make_screens(seed: int, cfg: dict, shared: Any) -> np.ndarray:
         # 目标每 slab r0 并裁剪到 N×N。
         return shared.oopao.make_screens(seed)
 
-    n_screens = int(p["n_screens"])  # 屏层数（= L / screen_sep，表 1 = 10）
+    n_screens = int(p.n_screens)  # 屏层数（= L / screen_sep，表 1 = 10）
     # Per-slab coherence length. ``compute_r0`` returns the path-integrated r0
     # for the full L. Each of the ``n_screens`` slabs (thickness L/n_screens)
     # carries r0_slab = r0_path * n_screens**(3/5); using the path r0 for every
@@ -406,10 +407,10 @@ def _make_screens(seed: int, cfg: dict, shared: Any) -> np.ndarray:
     # 中文：每 slab 相干长度。compute_r0 返回整条 L 路径积分的 r0；
     # n_screens 个 slab（厚 L/n_screens）各取 r0_slab = r0_path * n^(3/5)。
     # 若每层都用整条路径的 r0，总湍流强度会偏大 ~n^(3/5) 倍。
-    r0_path = compute_r0(shared.lam, float(p["cn2"]), float(p["L"]))  # 整条路径 r0 [m]
-    r0_slab = r0_path * n_screens ** (3.0 / 5.0)                       # 每 slab r0 [m]
-    l0_sim = float(p["l0_sim"])  # 内尺度 [m]（仿真守护值，表 1 = 0.01 m）
-    L0 = float(p["L0"])          # 外尺度 [m]（表 1 = 100 m）
+    r0_path = compute_r0(shared.lam, float(p.cn2), float(p.L))  # 整条路径 r0 [m]
+    r0_slab = r0_path * n_screens ** (3.0 / 5.0)  # 每 slab r0 [m]
+    l0_sim = float(p.l0_sim)  # 内尺度 [m]（仿真守护值，表 1 = 0.01 m）
+    L0 = float(p.L0)  # 外尺度 [m]（表 1 = 100 m）
     screens = np.stack(
         [
             # 第 i 层相位屏：用种子 seed+i，保证可复现且各层独立
@@ -418,7 +419,6 @@ def _make_screens(seed: int, cfg: dict, shared: Any) -> np.ndarray:
         ]
     ).astype(np.float32)
     return screens
-
 
 
 def _unwrap_flood_fill(phi_w: np.ndarray, quality: np.ndarray) -> np.ndarray:
@@ -456,7 +456,9 @@ def _unwrap_flood_fill(phi_w: np.ndarray, quality: np.ndarray) -> np.ndarray:
         中文：(N, N) 解卷绕后的相位（绝对 2π 偏移任意，piston 由调用方移除）。
     """
     N = phi_w.shape[0]
-    return _unwrap_flood_fill_nb(np.ascontiguousarray(phi_w), np.ascontiguousarray(quality), N)
+    return _unwrap_flood_fill_nb(
+        np.ascontiguousarray(phi_w), np.ascontiguousarray(quality), N
+    )
 
 
 @njit(cache=True)
@@ -493,8 +495,8 @@ def _unwrap_flood_fill_nb(phi_w: np.ndarray, quality: np.ndarray, N: int) -> np.
     中文：Numba 内核 —— 从最亮像素出发的 BFS 洪水填充解卷绕。
     对每个新像素，用其已解卷绕邻居的相位差中位数解卷绕，把 2π 支切推到弱场区。
     """
-    out = np.zeros((N, N))                     # 输出：解卷绕后的相位 (N, N)
-    done = np.zeros((N, N), dtype=np.bool_)    # 已处理标记 (N, N)
+    out = np.zeros((N, N))  # 输出：解卷绕后的相位 (N, N)
+    done = np.zeros((N, N), dtype=np.bool_)  # 已处理标记 (N, N)
     i0, j0 = 0, 0
     best = -1e30
     # 找到 quality 图最亮像素作为种子点（洪水填充起点）
@@ -524,7 +526,9 @@ def _unwrap_flood_fill_nb(phi_w: np.ndarray, quality: np.ndarray, N: int) -> np.
                 for di2, dj2 in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                     mi, mj = ni + di2, nj + dj2
                     if 0 <= mi < N and 0 <= mj < N and done[mi, mj]:
-                        vals[cnt] = out[mi, mj] + _wrap_diff(phi_w[ni, nj] - phi_w[mi, mj])
+                        vals[cnt] = out[mi, mj] + _wrap_diff(
+                            phi_w[ni, nj] - phi_w[mi, mj]
+                        )
                         cnt += 1
                 if cnt > 0:
                     # 用邻居差的中位数解卷绕（对弱场离群更鲁棒）
@@ -539,7 +543,7 @@ def _unwrap_flood_fill_nb(phi_w: np.ndarray, quality: np.ndarray, N: int) -> np.
 
 
 def _beacon_phase_conj(
-    seed: int, cfg: dict, shared: SharedSim, screens: np.ndarray
+    seed: int, cfg: SimConfig, shared: SharedSim, screens: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """Step D: diffraction-limited beacon back-propagation -> phi_conj.
 
@@ -561,9 +565,9 @@ def _beacon_phase_conj(
     seed : int
         Sample seed (unused here, kept for signature symmetry).
         中文：样本种子（此处未用，仅保持签名对称）。
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象。
     shared : SharedSim
         Shared state.
         中文：共享状态。
@@ -583,7 +587,7 @@ def _beacon_phase_conj(
     prop = shared.prop
     zern = shared.zern
     N = shared.N
-    p = cfg["physical"]
+    p = cfg.physical
 
     # Diffraction-limited beacon: a small Gaussian at the object plane whose
     # waist equals the diffraction limit seen from the telescope,
@@ -593,8 +597,10 @@ def _beacon_phase_conj(
     # 中文：衍射极限信标 —— 目标面的小高斯，束腰等于望远镜看到的衍射极限
     # w = λ·L/Dscope（约 2.7 mm）。单像素 delta 的角谱平坦（无限带宽），会使
     # 反向传播相位在数值上失真、与真实湍流不相关，故用有限束腰高斯。
-    w = shared.lam * float(p["L"]) / float(p["Dscope"])         # 信标束腰 [m]
-    E_pt = (np.exp(-shared.r2 / w**2) * shared.pupil).astype(np.complex64)  # 信标场 (复)
+    w = shared.lam * float(p.L) / float(p.Dscope)  # 信标束腰 [m]
+    E_pt = (np.exp(-shared.r2 / w**2) * shared.pupil).astype(
+        np.complex64
+    )  # 信标场 (复)
 
     # Back-propagate through the reversed screens to the pupil.
     # 中文：反向穿过倒序相位屏到瞳孔（逆分步传播，-dz）。
@@ -610,15 +616,17 @@ def _beacon_phase_conj(
     # 使残余湍流相位能干净解卷绕；全口径低阶 Zernike 拟合离焦会被弱场边缘
     # 离群点污染。
     k = 2.0 * np.pi / shared.lam
-    spherical = k * shared.r2 / (2.0 * float(p["L"]))   # 会聚球面相位 [rad]
-    E_flat = E_back * np.exp(1j * spherical)            # 移除离焦后的平坦场
+    spherical = k * shared.r2 / (2.0 * float(p.L))  # 会聚球面相位 [rad]
+    E_flat = E_back * np.exp(1j * spherical)  # 移除离焦后的平坦场
 
     # 强度引导的 2D 解卷绕（质量图 = 瞳孔处信标强度）
-    phi_unwrapped = _unwrap_flood_fill(np.angle(E_flat), (np.abs(E_back) ** 2).astype(np.float64))
+    phi_unwrapped = _unwrap_flood_fill(
+        np.angle(E_flat), (np.abs(E_back) ** 2).astype(np.float64)
+    )
     # 移除 piston（孔径内平均相位置零）
     phi_unwrapped = phi_unwrapped - phi_unwrapped[shared.pupil].mean()
 
-    phi_conj = -phi_unwrapped                    # 取共轭 -> 共轭信标相位
+    phi_conj = -phi_unwrapped  # 取共轭 -> 共轭信标相位
     I_beacon = (np.abs(E_back) ** 2).astype(np.float64)  # 瞳孔处信标强度（诊断）
     return phi_conj, I_beacon
 
@@ -651,18 +659,16 @@ def _tracking(shared: SharedSim, phi_conj: np.ndarray) -> tuple[np.ndarray, np.n
         中文：(phi_track, track_slopes)。phi_track 为 (N, N) float64 跟踪相位；
         track_slopes 为 (2,) float64 [a_x, a_y]（斜率，rad/m）。
     """
-    G = shared.G                              # 倾斜跟踪高斯权重 (N, N)
-    gx, gy = np.gradient(phi_conj)            # 共轭信标相位的梯度
-    a_x = float(np.sum(G * gx) / np.sum(G))   # x 方向倾斜斜率 [rad/m]
-    a_y = float(np.sum(G * gy) / np.sum(G))   # y 方向倾斜斜率 [rad/m]
+    G = shared.G  # 倾斜跟踪高斯权重 (N, N)
+    gx, gy = np.gradient(phi_conj)  # 共轭信标相位的梯度
+    a_x = float(np.sum(G * gx) / np.sum(G))  # x 方向倾斜斜率 [rad/m]
+    a_y = float(np.sum(G * gy) / np.sum(G))  # y 方向倾斜斜率 [rad/m]
     phi_track = a_x * shared.X + a_y * shared.Y  # 线性斜坡跟踪相位 [rad]
     track_slopes = np.array([a_x, a_y], dtype=np.float64)
     return phi_track, track_slopes
 
 
-def _fom_leg(
-    shared: SharedSim, screens: np.ndarray, phi_total: np.ndarray
-) -> float:
+def _fom_leg(shared: SharedSim, screens: np.ndarray, phi_total: np.ndarray) -> float:
     """Step G: forward-propagate with a total aperture phase and return FOM.
 
     ``E_obj = split_step(E0 e^{i phi_total}, screens, dz)`` then
@@ -692,37 +698,76 @@ def _fom_leg(
     """
     E_obj = shared.prop.split_step(
         (shared.E0 * np.exp(1j * phi_total)).astype(np.complex64),  # 孔径场
-        screens,                                                     # 湍流屏
-        shared.dz,                                                   # 屏间距
+        screens,  # 湍流屏
+        shared.dz,  # 屏间距
     )
     I_obj = (np.abs(E_obj) ** 2).astype(np.float32)  # 目标面强度
     return FOM(I_obj, shared.I_vac, shared.bucket_mask)
 
 
 def _imaging(
-    seed: int, cfg: dict, shared: SharedSim, screens: np.ndarray, phi_track: np.ndarray
+    seed: int,
+    cfg: SimConfig,
+    shared: SharedSim,
+    screens: np.ndarray,
+    phi_track: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Step H: multi-plane rough-surface imaging (tracking-only condition).
 
-    The tracking-only object field is scattered off ``n_roughness`` independent
-    rough surfaces, back-propagated through the (reversed) screens, collimated
-    by the conjugate of the outgoing phase, focused by the objective lens, and
-    propagated to each measurement plane. The per-plane intensities are averaged
-    over realizations.
+    Pipeline (paper §2.4, Figure 2):
+
+    1. **Turbulent intensity as source amplitude** — ``I_obj_track``
+       (forward-propagated with tracking phase) is used as the source
+       amplitude at the target plane.  The source carries the atmospheric
+       speckle pattern in its amplitude; the round-trip atmospheric
+       *phase* enters *only* through the back-propagation (step H.1),
+       correctly modeling the echo's phase while its intensity pattern
+       reflects the turbulent forward path.
+
+    2. **Step H.1 — back-propagation** (new, explicit step): the source
+       ``sqrt(I_obj_track)·exp(1j·phi_r)`` with a **true Lambertian roughness
+       phase** ``phi_r ~ U[0, 2π)`` per realization is back-propagated through
+       the *reversed* turbulence screens (``screens[::-1]``, ``-dz``),
+       yielding the pupil-plane return field.  This reuses the same screens
+       drawn for the forward path, correctly modeling the round-trip phase
+       doubling (forward + backward through the same atmosphere).
+
+    3. **Absorbing boundary** — multiply by ``pupil`` (removes field outside
+       the telescope aperture ``Dscope`` to prevent FFT aliasing / edge
+       artefacts).
+
+    4. **Collimation** — multiply by ``exp(-1j·phi_total)`` (conjugate of the
+       outgoing focus + tracking phase) to turn the converging return wave
+       back into a collimated beam.
+
+    5. **Objective lens** — quadratic phase ``exp(-1j·k·r²/(2·f_obj))``.
+
+    6. **Multi-plane measurement** — propagate to 3 planes
+       ``(f_obj − z_R, f_obj, f_obj + z_R)`` using **zero-padded scaled-FFT
+       Fresnel** propagation (``prop.fresnel_padded`` with per-plane
+       ``N_pad(z)``).  For these very large distances (640–1920 m) the
+       angular-spectrum kernel ``exp(-i·π·λ·z·f²)`` wraps millions of times
+       in float32, losing numerical precision, and the fixed ``dx`` grid of
+       plain Fresnel undersamples the focal Airy disk to ~1 px.  Zero-padding
+       gives every plane the same output pixel scale
+       ``Δx' = λ·f_obj/(8N·dx) ≈ 0.428 mm/px`` (one camera sensor).
+
+    7. **Non-coherent average** — per-realization intensities (not fields)
+       are accumulated over ``n_roughness`` roughness realizations.
 
     中文：步骤 H —— 多平面粗糙面成像（仅跟踪条件）。
-    仅跟踪的目标面场经 n_roughness 个独立粗糙面散射，反向穿过（倒序）相位屏，
-    用出射相位的共轭准直，经物镜聚焦，传播到各测量平面。各平面强度对
-    各 realization 取平均。
+    流程：(1) I_obj_track 作为振幅、均相光源 → (2) 步 H.1
+    复用湍流屏反向传播 → (3) 吸收边界 → (4) 相位共轭准直 → (5) 物镜聚焦 →
+    (6) Fresnel 多平面成像 → (7) 非相干平均。
 
     Parameters
     ----------
     seed : int
         Sample seed (drives the roughness RNG stream).
         中文：样本种子（驱动粗糙面 RNG 流）。
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象。
     shared : SharedSim
         Shared state.
         中文：共享状态。
@@ -743,14 +788,17 @@ def _imaging(
     """
     prop = shared.prop
     N = shared.N
-    n_roughness = int(cfg["physical"]["n_roughness"])  # 粗糙面 realization 数（表 1 = 10）
+    n_roughness = int(cfg.physical.n_roughness)  # 粗糙面 realization 数（表 1 = 10）
     k = shared.k
     f_obj = shared.f_obj
     r2 = shared.r2
+    pupil = shared.pupil
+    lam = shared.lam
+    dx = shared.dx
+    phi_total = shared.phi_focus + phi_track  # 出射总相位（聚焦 + 跟踪）
 
-    # Tracking-only object-plane intensity.
+    # Tracking-only object-plane intensity (diagnostic / return value).
     # 中文：仅跟踪目标面强度（聚焦 + 跟踪相位，经湍流屏前向传播）。
-    phi_total = shared.phi_focus + phi_track
     E_obj_track = prop.split_step(
         (shared.E0 * np.exp(1j * phi_total)).astype(np.complex64),
         screens,
@@ -758,40 +806,71 @@ def _imaging(
     )
     I_obj_track = (np.abs(E_obj_track) ** 2).astype(np.float32)
 
-    pupil = shared.pupil
+    # Turbulent intensity as source amplitude at the target plane, with uniform
+    # phase (zero).  The round-trip atmospheric phase enters *only* through the
+    # back-propagation in step H.1 (reversed screens), so the source's phase must
+    # be uniform; the source's amplitude carries the forward-path atmospheric
+    # speckle pattern from I_obj_track.
+    I_spot = I_obj_track
+
     images = np.zeros((3, N, N), dtype=np.float32)
+    # 统一三个测量平面的输出像素尺度 = 同一相机传感器：
+    # dx' = λ·f_obj/(N_pad_ref·dx) 固定；每个平面用各自的
+    # N_pad(z) = λ·z/(dx'·dx)，使每个输出像素对应相同的物理尺寸
+    # (computePSF 的 zeroPaddingFactor 思路)。f_obj = 2·zR_APWS 时
+    # 恰为 [2048, 4096, 6144]（N=512 配置）。
+    # Uniform output pixel scale across the three planes = ONE camera sensor.
+    # dx' = lam*f_obj/(N_pad_ref*dx) is fixed; each plane uses its own
+    # N_pad(z) = lam*z/(dx'*dx) so every output pixel maps to the same
+    # physical size (computePSF spirit: pixel_scale = lam/(zeroPadding*D)).
+    N_pad_ref = 8 * N                  # 参考零填充（焦平面 plane 1）
+    DX_PLANE = lam * f_obj / (N_pad_ref * dx)      # ~0.428 mm/px, ALL planes
+    plane_offsets = shared.plane_offsets   # [f_obj-zR_APWS, f_obj, f_obj+zR_APWS]
+    N_pad_planes = [int(round(lam * z / (DX_PLANE * dx))) for z in plane_offsets]
+
     for j in range(n_roughness):
         # Roughness realization (deterministic given seed).
         # 中文：第 j 个粗糙面 realization（由 seed 决定，确定性可复现）。
-        phi_r = random_roughness_phase((N, N), seed=(seed * 31 + j) % (2**32))
-        E_scat = (np.sqrt(I_obj_track) * np.exp(1j * phi_r)).astype(np.complex64)
-        # Back-propagate through the reversed screens.
-        # 中文：反向穿过倒序相位屏（逆分步传播，-dz）。
+        # Fix 2: TRUE Lambertian roughness — uniform-random phase [0, 2π)
+        # per realization, seeded by the sample seed (notebook §8.1 Fix 2).
+        # 中文：真随机粗糙面相位 [0, 2π)——每 realization 独立，非零。
+        phi_r = random_roughness_phase((N, N), seed=seed * 31 + j)
+        # Source at target plane: turbulent intensity as amplitude,
+        # random roughness phase — round-trip atmospheric phase enters
+        # only via back-propagation through reversed screens (step H.1).
+        E_scat = (np.sqrt(I_spot) * np.exp(1j * phi_r)).astype(np.complex64)
+
+        # --- Step H.1: back-propagate the source through the reversed ---
+        # --- turbulence screens (reuse the same screens as the forward) ---
+        # --- path).  This is the only place atmospheric phase enters  ---
+        # --- the imaging pipeline, ensuring a consistent round-trip.    ---
+        # 中文：步骤 H.1 —— 复用湍流屏反向传播至望远镜入瞳。
         E_back = prop.split_step(E_scat, screens[::-1], -shared.dz)
-        # Absorbing boundary: the telescope has a finite aperture (Dscope).
-        # Field scattered outside the pupil must be removed before re-focusing,
-        # otherwise it wraps through the FFT and brightens the image border
-        # (paper Sec 2.4: absorbing boundary conditions to prevent boundary
-        # reflection).
-        # 中文：吸收边界 —— 望远镜口径有限（Dscope）。孔径外散射的场必须在
-        # 重新聚焦前移除，否则经 FFT 卷绕会点亮图像边缘（论文 2.4 节：吸收
-        # 边界条件，防止边界反射）。
+
+        # Absorbing boundary: finite-aperture telescope (paper Sec 2.4).
+        # 中文：吸收边界 —— 有限口径望远镜（论文 2.4 节）。
         E_back = (E_back * pupil).astype(np.complex64)
         # Collimate by the conjugate of the outgoing phase.
         # 中文：用出射相位的共轭准直（把会聚场转回平行光）。
         E_c = (E_back * np.exp(-1j * phi_total)).astype(np.complex64)
-        # Objective lens.
+        # Objective lens (focal length f_obj).
         # 中文：物镜（焦距 f_obj 的二次聚焦相位）。
         E_l = (E_c * np.exp(-1j * k * r2 / (2.0 * f_obj))).astype(np.complex64)
-        # Incoherent imaging: average the per-realization INTENSITIES (paper
-        # Sec 2.4: "incoherent image"), not the fields. Field averaging
-        # retains the coherent speckle; intensity averaging blurs it out.
+
+        # Fix 3: zero-padded scaled-FFT Fresnel (notebook §8.1 Fix 3) —
+        # per-plane N_pad gives the SAME output pixel scale DX_PLANE on every
+        # plane; crop the central N×N of each padded plane.
+        # 中文：零填充 scaled-FFT Fresnel —— 每个平面用 N_pad(z) 得到相同
+        # 输出像素尺度，再裁剪中心 N×N。
+        # Incoherent imaging: average per-realization INTENSITIES (paper
+        # Sec 2.4: "incoherent image"), not the fields.
         # 中文：非相干成像 —— 对各 realization 的强度（而非场）取平均
-        # （论文 2.4 节 “incoherent image”）。场平均会保留相干散斑，强度
-        # 平均则将其模糊掉。
-        for p in range(3):
-            I_p = prop.angular_spectrum_intensity(E_l, shared.plane_offsets[p])
-            images[p] += (I_p * pupil).astype(np.float32)
+        # （论文 2.4 节 “incoherent image”）。
+        for p, z in enumerate(plane_offsets):
+            n_pad = N_pad_planes[p]
+            E_z = prop.fresnel_padded(E_l, z, n_pad)
+            c = (n_pad - N) // 2
+            images[p] += (np.abs(E_z[c:c + N, c:c + N]) ** 2).astype(np.float32)
 
     images /= n_roughness
     return images, I_obj_track
@@ -814,7 +893,7 @@ class SimulatedPhysicsEngine(PhysicsEngine):
     委托给现有的 _make_screens / _beacon_phase_conj / _tracking / _fom_leg。
     """
 
-    def __init__(self, cfg: dict, shared: Optional[SharedSim] = None) -> None:
+    def __init__(self, cfg: SimConfig, shared: Optional[SharedSim] = None) -> None:
         self.cfg = cfg
         # Resolve None / SharedSim / physics_from_cfg-tuple to a SharedSim.
         self._shared = _resolve_shared(shared, cfg)
@@ -886,19 +965,19 @@ class SimulatedPhysicsEngine(PhysicsEngine):
 
     @property
     def n_screens(self) -> int:
-        return int(self.cfg["physical"]["n_screens"])
+        return int(self.cfg.physical.n_screens)
 
     @property
     def cn2(self) -> float:
-        return float(self.cfg["physical"]["cn2"])
+        return float(self.cfg.physical.cn2)
 
     @property
     def L0(self) -> float:
-        return float(self.cfg["physical"]["L0"])
+        return float(self.cfg.physical.L0)
 
     @property
     def l0_sim(self) -> float:
-        return float(self.cfg["physical"]["l0_sim"])
+        return float(self.cfg.physical.l0_sim)
 
     # -- PhysicsEngine step methods ----------------------------------------- #
     def make_screens(self, seed: int) -> np.ndarray:
@@ -909,14 +988,10 @@ class SimulatedPhysicsEngine(PhysicsEngine):
     ) -> tuple[np.ndarray, np.ndarray]:
         return _beacon_phase_conj(seed, self.cfg, self._shared, screens)
 
-    def track(
-        self, phi_conj: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def track(self, phi_conj: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return _tracking(self._shared, phi_conj)
 
-    def forward_fom(
-        self, screens: np.ndarray, phi_total: np.ndarray
-    ) -> float:
+    def forward_fom(self, screens: np.ndarray, phi_total: np.ndarray) -> float:
         return _fom_leg(self._shared, screens, phi_total)
 
     def phase_to_zernike(self, phi: np.ndarray) -> np.ndarray:
@@ -940,7 +1015,7 @@ class SimulatedMeasurementSource(MeasurementSource):
     前向传播、粗糙面散射、反向传播、准直、聚焦并传播到各测量平面。
     """
 
-    def __init__(self, engine: PhysicsEngine, cfg: dict):
+    def __init__(self, engine: PhysicsEngine, cfg: SimConfig):
         self._engine = engine
         self._cfg = cfg
 
@@ -966,7 +1041,7 @@ class SimulatedMeasurementSource(MeasurementSource):
 def _resolve_engine(
     engine: Optional[PhysicsEngine],
     shared: Any,
-    cfg: dict,
+    cfg: SimConfig,
 ) -> PhysicsEngine:
     """Resolve the engine from ``engine`` / legacy ``shared`` / ``cfg``.
 
@@ -1051,7 +1126,7 @@ class SimSample:
 
 def simulate_sample(
     seed: int,
-    cfg: dict,
+    cfg: SimConfig,
     correction_coeffs: Optional[np.ndarray] = None,
     *,
     engine: Optional[PhysicsEngine] = None,
@@ -1069,9 +1144,9 @@ def simulate_sample(
     seed : int
         Sample seed (sample seed = master_seed + sample_index).
         中文：样本种子（样本种子 = master_seed + sample_index）。
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典（见 config.yaml）。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象（见 config.yaml）。
     correction_coeffs : np.ndarray, optional
         ``(78,)`` Zernike coefficients for the ML correction leg. When given,
         ``fom_ml`` is filled and the ``'ml'`` beam phase is added.
@@ -1160,7 +1235,7 @@ def simulate_sample(
 
     # Step H: imaging (tracking-only condition) via the measurement source.
     # 中文：H. 多平面成像（仅跟踪条件），经测量源生成 3 平面图像。
-    master_seed = int(cfg.get("data", {}).get("master_seed", 0))
+    master_seed = int(cfg.data.master_seed)
     images, I_obj_track = measurement.acquire(
         seed=seed,
         sample_index=int(seed) - master_seed,
@@ -1190,7 +1265,7 @@ def simulate_sample(
 
 def simulate_sample_fom(
     seed: int,
-    cfg: dict,
+    cfg: SimConfig,
     coeffs: np.ndarray,
     *,
     engine: Optional[PhysicsEngine] = None,
@@ -1210,9 +1285,9 @@ def simulate_sample_fom(
     seed : int
         Sample seed.
         中文：样本种子。
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象。
     coeffs : np.ndarray
         ``(78,)`` Zernike coefficients.
         中文：(78,) Zernike 系数（CNN 预测或真实标签）。
@@ -1273,8 +1348,8 @@ def _quantize(images_raw: np.ndarray, scale_p: np.ndarray) -> np.ndarray:
     # 每张图按自身最大值归一化（论文 Fig. 2 “图像分别归一化”），使焦平面
     # （能量集中）达到 12-bit 满量程，而不会被数据集级逐平面最大值压暗。
     img_max = images_raw.max(axis=(1, 2), keepdims=True)
-    normalized = images_raw / np.maximum(img_max, 1e-12)          # 归一化到 [0, 1]
-    scaled = np.clip(normalized * (2**11 - 1), 0, 2**11 - 1)      # 缩放到 12-bit (0-2047)
+    normalized = images_raw / np.maximum(img_max, 1e-12)  # 归一化到 [0, 1]
+    scaled = np.clip(normalized * (2**11 - 1), 0, 2**11 - 1)  # 缩放到 12-bit (0-2047)
     return scaled.astype(np.uint16)
 
 
@@ -1286,16 +1361,28 @@ _WORKER_ENGINE: Optional[PhysicsEngine] = None
 _WORKER_MEASUREMENT: Optional[MeasurementSource] = None
 
 
-def _worker_init(cfg: dict) -> None:
+def _worker_init(
+    cfg: SimConfig,
+    engine: Optional[PhysicsEngine] = None,
+    measurement: Optional[MeasurementSource] = None,
+) -> None:
     """Pool initializer: cache cfg + shared state once per worker process.
 
+    On POSIX the pool uses ``fork`` and the injected ``engine`` / ``measurement``
+    are inherited COW from the parent (the globals are already set there); on
+    Windows only ``spawn`` exists, so they are passed explicitly through the
+    initializer args (pickled once per worker).
+
     中文：Pool 初始化器 —— 每个 worker 进程缓存配置与共享状态（避免每个
-    样本重复构建传播器/Zernike 基底）。
-    参数 cfg: 配置字典（传入 Pool initargs）。
+    样本重复构建传播器/Zernike 基底；Windows spawn 下 engine/measurement
+    经 initargs 传入，POSIX fork 下由父进程 COW 继承）。
+    参数 cfg: 配置对象（传入 Pool initargs）。
     """
-    global _WORKER_CFG, _WORKER_SHARED
+    global _WORKER_CFG, _WORKER_SHARED, _WORKER_ENGINE, _WORKER_MEASUREMENT
     _WORKER_CFG = cfg
     _WORKER_SHARED = _get_shared(cfg)
+    _WORKER_ENGINE = engine
+    _WORKER_MEASUREMENT = measurement
 
 
 def _worker_generate(batch: list[tuple[int, int]]) -> list[tuple]:
@@ -1346,13 +1433,16 @@ def _make_batches(
     batches = []
     for i in range(0, len(indices), chunk):
         batches.append(
-            [(int(idx), int(seed)) for idx, seed in zip(indices[i : i + chunk], seeds[i : i + chunk])]
+            [
+                (int(idx), int(seed))
+                for idx, seed in zip(indices[i : i + chunk], seeds[i : i + chunk])
+            ]
         )
     return batches
 
 
 def generate_dataset(
-    cfg: dict,
+    cfg: SimConfig,
     *,
     engine: Optional[PhysicsEngine] = None,
     measurement: Optional[MeasurementSource] = None,
@@ -1372,9 +1462,9 @@ def generate_dataset(
 
     Parameters
     ----------
-    cfg : dict
-        Configuration dictionary.
-        中文：配置字典（含 physical / data 节）。
+    cfg : SimConfig
+        Configuration object.
+        中文：配置对象（含 physical / data 节）。
     engine : PhysicsEngine, optional
         Custom physics engine injected into the workers.
         中文：自定义物理引擎（注入各 worker）。
@@ -1390,16 +1480,16 @@ def generate_dataset(
         Path to the written HDF5 file.
         中文：写出的 HDF5 文件路径。
     """
-    p = cfg["physical"]
-    d = cfg["data"]
-    N = int(p["N"])                # 网格分辨率
-    n_train = int(d["n_train"])    # 训练集样本数
-    n_test = int(d["n_test"])      # 测试集样本数
-    n_eval = int(d["n_eval"])      # 评估集样本数
-    master_seed = int(d["master_seed"])  # 主种子（样本种子 = master_seed + 索引）
-    workers = int(d["workers"])    # 多进程 worker 数
-    h5_path = d["h5_path"]         # HDF5 输出路径
-    L = float(p["L"])              # 传播距离 [m]
+    p = cfg.physical
+    d = cfg.data
+    N = int(p.N)  # 网格分辨率
+    n_train = int(d.n_train)  # 训练集样本数
+    n_test = int(d.n_test)  # 测试集样本数
+    n_eval = int(d.n_eval)  # 评估集样本数
+    master_seed = int(d.master_seed)  # 主种子（样本种子 = master_seed + 索引）
+    workers = int(d.workers)  # 多进程 worker 数
+    h5_path = d.h5_path  # HDF5 输出路径
+    L = float(p.L)  # 传播距离 [m]
 
     # A hardware measurement source cannot be shared across fork'd processes
     # (a physical device / file stream is single-consumer), so force workers=1.
@@ -1441,9 +1531,19 @@ def generate_dataset(
     _prev_engine, _prev_measurement = _WORKER_ENGINE, _WORKER_MEASUREMENT
     _WORKER_ENGINE, _WORKER_MEASUREMENT = engine, measurement
     try:
-        # fork 上下文：子进程继承父进程已构建的 shared（COW，零拷贝）
-        ctx = multiprocessing.get_context("fork")
-        with ctx.Pool(n_workers, initializer=_worker_init, initargs=(cfg,)) as pool:
+        # POSIX: fork 上下文 —— 子进程通过 COW 继承父进程已构建的 shared 与
+        # 注入的 engine/measurement（零拷贝）；Windows: 无 fork，回退 spawn，
+        # engine/measurement 经 initargs 一次性 pickled 给每个 worker。
+        # English: POSIX uses fork (COW zero-copy inheritance of shared state
+        # and the injected engine/measurement); Windows has no fork, so spawn
+        # is used and engine/measurement are passed via initargs.
+        _ctx_names = multiprocessing.get_all_start_methods()
+        ctx_name = "fork" if "fork" in _ctx_names else "spawn"
+        ctx = multiprocessing.get_context(ctx_name)
+        initargs: tuple = (cfg,)
+        if ctx_name == "spawn":
+            initargs = (cfg, engine, measurement)
+        with ctx.Pool(n_workers, initializer=_worker_init, initargs=initargs) as pool:
             # ---- single pass: quantize + stream all samples to HDF5, while
             #      accumulating train-only stats (Eqs 13-14) ----
             # 中文：单趟 —— 量化 + 流式写出全部样本到 HDF5，同时仅用训练子集
@@ -1484,7 +1584,7 @@ def generate_dataset(
                 f.create_dataset("scale_p", (3,), dtype=np.float32)
                 f.create_dataset("vacuum_intensity", (N, N), dtype=np.float32)
                 # 把完整配置序列化为 attr，便于离线复现
-                f.attrs["config_json"] = json.dumps(cfg)
+                f.attrs["config_json"] = json.dumps(cfg.to_dict())
 
                 # 流式写出全部样本（按样本索引随机顺序，chunk=4 减小 IPC 等待）。
                 # 量化用逐图像归一化（_quantize 忽略 scale_p），故 scale_p 可在
@@ -1527,7 +1627,9 @@ def generate_dataset(
                 # 公式 14：逐模式标签的均值 mu 与标准差 sigma（用于训练时 z 标准化）
                 mu = label_sum / n_train
                 sigma = np.sqrt(np.maximum(label_sumsq / n_train - mu**2, 0.0))
-                scale_p = plane_max.astype(np.float32)  # 逐平面 raw 最大值（schema 兼容）
+                scale_p = plane_max.astype(
+                    np.float32
+                )  # 逐平面 raw 最大值（schema 兼容）
 
                 # Metadata（一次性写满的标量/向量元数据）。
                 f["seeds"][:] = master_seed + all_idx

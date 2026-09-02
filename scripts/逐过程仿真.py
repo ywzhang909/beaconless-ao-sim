@@ -37,26 +37,24 @@ Usage::
 from __future__ import annotations
 
 import sys
-import os
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
-import numpy as np
-import yaml
-import matplotlib.pyplot as plt
 import matplotlib
-from matplotlib.colors import Normalize
+import matplotlib.pyplot as plt
+import numpy as np
 
 # ── 项目路径设置 ──────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from physics.config import load_config
 from physics.propagation_fft import Propagator
-from physics.zernike_aotools import ZernikeBasis
 from physics.scattering import random_roughness_phase
 from physics.screens_soapy import compute_r0
+from physics.zernike_aotools import ZernikeBasis
 from utils.metrics import FOM, bucket_mask
 
 # OOPAO 可用性探测（与项目现有 fallback 模式一致：oopao -> aotools）
@@ -352,22 +350,21 @@ class StepByStepSimulation:
         cfg_path = Path(config_path)
         if not cfg_path.is_absolute():
             cfg_path = _PROJECT_ROOT / cfg_path
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            self.cfg = yaml.safe_load(f)
+        self.cfg = load_config(cfg_path)
 
-        p = self.cfg["physical"]
-        img = self.cfg["imaging"]
-        b = self.cfg["bucket"]
+        p = self.cfg.physical
+        img = self.cfg.imaging
+        b = self.cfg.bucket
 
         # ── 基本量 ──
-        self.N: int = int(p["N"])
-        self.dx: float = float(p["box_size"]) / self.N
-        self.lam: float = float(p["wavelength"])
+        self.N: int = int(p.N)
+        self.dx: float = float(p.box_size) / self.N
+        self.lam: float = float(p.wavelength)
         self.k: float = 2.0 * np.pi / self.lam
-        self.rspot: float = float(p["rspot"])
-        self.focal: float = float(p["focal"])
-        self.L: float = float(p["L"])
-        self.Dscope: float = float(p["Dscope"])
+        self.rspot: float = float(p.rspot)
+        self.focal: float = float(p.focal)
+        self.L: float = float(p.L)
+        self.Dscope: float = float(p.Dscope)
 
         # ── 坐标网格 ──
         x = (np.arange(self.N) - (self.N - 1) / 2.0) * self.dx
@@ -396,16 +393,16 @@ class StepByStepSimulation:
         self.zern = ZernikeBasis(self.N, N_MODES)
 
         # ── 成像几何（公式 9-12）──
-        self.r0 = compute_r0(self.lam, float(p["cn2"]), self.L)
-        self.zR_APWS = img["zR_APWS"] if img["zR_APWS"] is not None else self.r0**2 / (np.pi * self.lam)
-        self.f_obj = img["f_obj"] if img["f_obj"] is not None else 2.0 * self.zR_APWS
+        self.r0 = compute_r0(self.lam, float(p.cn2), self.L)
+        self.zR_APWS = img.zR_APWS if img.zR_APWS is not None else self.r0**2 / (np.pi * self.lam)
+        self.f_obj = img.f_obj if img.f_obj is not None else 2.0 * self.zR_APWS
         self.plane_offsets = np.array(
-            [self.f_obj + (frac - 1.0) * self.zR_APWS for frac in img["plane_offset_frac"]],
+            [self.f_obj + (frac - 1.0) * self.zR_APWS for frac in img.plane_offset_frac],
             dtype=np.float64,
         )
 
         # ── FOM 桶掩膜 ──
-        D_bucket = float(b["diameter_frac"]) * self.L * self.lam / self.Dscope
+        D_bucket = float(b.diameter_frac) * self.L * self.lam / self.Dscope
         diameter_px = D_bucket / self.dx
         self.bucket_mask = bucket_mask(self.N, diameter_px)
 
@@ -417,13 +414,13 @@ class StepByStepSimulation:
         # ── OOPAO 大气后端 ──
         # 与现有 simulate.py 一致：beam_source 配置选择 oopao / aotools / soapy，
         # 若 OOPAO 不可用则自动回退到 aotools（确定性 per-seed 屏幕）。
-        beam_source = str(p.get("beam_source", "oopao")).lower()
+        beam_source = str(p.beam_source).lower()
         if beam_source == "oopao" and _OOPAO_AVAILABLE:
             print("[初始化] 构建 OOPAO 大气后端...")
             self.oopao = _OopaoBackend(
                 N=self.N, dx=self.dx, Dscope=self.Dscope, lam=self.lam,
-                cn2=float(p["cn2"]), L=self.L, L0=float(p["L0"]),
-                n_screens=int(p["n_screens"]),
+                cn2=float(p.cn2), L=self.L, L0=float(p.L0),
+                n_screens=int(p.n_screens),
             )
         else:
             if beam_source == "oopao":
@@ -442,13 +439,13 @@ class StepByStepSimulation:
             return self.oopao.make_screens(seed)
         # aotools 回退路径
         from aotools.turbulence.phasescreen import ft_sh_phase_screen
-        p = self.cfg["physical"]
-        n_screens = int(p["n_screens"])
-        r0_path = compute_r0(self.lam, float(p["cn2"]), self.L)
+        p = self.cfg.physical
+        n_screens = int(p.n_screens)
+        r0_path = compute_r0(self.lam, float(p.cn2), self.L)
         r0_slab = r0_path * n_screens ** (3.0 / 5.0)
         screens = np.stack([
-            ft_sh_phase_screen(r0_slab, self.N, self.dx, float(p["L0"]),
-                               float(p["l0_sim"]), seed=seed + i)
+            ft_sh_phase_screen(r0_slab, self.N, self.dx, float(p.L0),
+                               float(p.l0_sim), seed=seed + i)
             for i in range(n_screens)
         ]).astype(np.float32)
         return screens
@@ -1374,7 +1371,7 @@ class StepByStepSimulation:
                               ax=axes[1, p])
             # 桶掩膜可视化
             axes[1, 3].imshow(self.bucket_mask.astype(float), cmap="gray", origin="lower")
-            D_bucket = float(self.cfg["bucket"]["diameter_frac"]) * self.L * self.lam / self.Dscope
+            D_bucket = float(self.cfg.bucket.diameter_frac) * self.L * self.lam / self.Dscope
             axes[1, 3].set_title(f"FOM 桶掩膜\nD={D_bucket*1e3:.1f}mm", fontsize=13)
             axes[1, 3].set_xlabel(LABELS["xlabel_pixel"])
             axes[1, 3].set_ylabel(LABELS["ylabel_pixel"])

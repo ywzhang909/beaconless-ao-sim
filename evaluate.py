@@ -45,23 +45,22 @@ import os
 from typing import Any, Optional
 
 import h5py
+import matplotlib
 import numpy as np
 import torch
-import yaml
 from tqdm import tqdm
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-from models.cnn import CNN1, CNN1Freq, CNN1Star, CNNL  # noqa: E402
-from utils.metrics import eta, gain, mode_pearson  # noqa: E402
-from utils.wandb_utils import (  # noqa: E402
+from models.cnn import CNN1, CNNL, CNN1Freq, CNN1Star
+from physics.config import SimConfig, load_config
+from utils.metrics import eta, gain, mode_pearson
+from utils.wandb_utils import (
     finish_wandb,
     init_wandb,
     log_figure,
     log_metrics,
 )
+
+matplotlib.use("Agg")
 
 # Multiprocessing worker state (set once per worker process by _init_worker).
 _WORKER_CFG: dict = {}
@@ -70,82 +69,79 @@ _WORKER_CFG: dict = {}
 # --------------------------------------------------------------------------- #
 # Config plumbing
 # --------------------------------------------------------------------------- #
-def _derive_bucket_mask_px(cfg: dict) -> float:
+def _derive_bucket_mask_px(cfg: SimConfig) -> float:
     """Derive the FOM bucket diameter in pixels from the config geometry.
 
     ``D_bucket = diameter_frac * L * lambda / D_telescope`` (Eq 6 geometry,
     config.yaml ``bucket.diameter_frac``), converted to pixels with the grid
     scale ``box_size / N``.
     """
-    phys = cfg["physical"]
-    bucket = cfg["bucket"]
-    # Coerce to float: PyYAML parses "800e-9" (no decimal point) as a string.
+    phys = cfg.physical
+    bucket = cfg.bucket
     d_bucket = (
-        float(bucket["diameter_frac"])
-        * float(phys["L"])
-        * float(phys["wavelength"])
-        / float(phys["Dscope"])
+        float(bucket.diameter_frac)
+        * float(phys.L)
+        * float(phys.wavelength)
+        / float(phys.Dscope)
     )
-    px_scale = float(phys["box_size"]) / float(phys["N"])
+    px_scale = float(phys.box_size) / float(phys.N)
     return float(d_bucket / px_scale)
 
 
-def attach_eval(cfg: dict, ckpt_path: str) -> dict:
-    """Return a copy of ``cfg`` with evaluation fields attached.
+def attach_eval(cfg: SimConfig, ckpt_path: str) -> SimConfig:
+    """Attach evaluation fields to ``cfg`` (mutates and returns the same object).
 
-    Adds ``cfg.eval.out_dir`` (default ``"results"``), ``cfg.eval.ckpt_path``
+    Sets ``cfg.eval.out_dir`` (default ``"results"``), ``cfg.eval.ckpt_path``
     and ``cfg.eval.bucket_mask_px`` (derived from the bucket geometry when the
-    config leaves it ``null``).
+    config leaves it ``None``).
     """
-    cfg = dict(cfg)
-    cfg["eval"] = dict(cfg.get("eval", {}))
-    cfg["eval"]["out_dir"] = cfg["eval"].get("out_dir", "results")
-    cfg["eval"]["ckpt_path"] = ckpt_path
-    if cfg["eval"].get("bucket_mask_px") is None:
-        cfg["eval"]["bucket_mask_px"] = _derive_bucket_mask_px(cfg)
+    cfg.eval.out_dir = cfg.eval.out_dir or "results"
+    cfg.eval.ckpt_path = ckpt_path
+    if cfg.eval.bucket_mask_px is None:
+        cfg.eval.bucket_mask_px = _derive_bucket_mask_px(cfg)
     return cfg
 
 
 # --------------------------------------------------------------------------- #
 # Model + checkpoint
 # --------------------------------------------------------------------------- #
-def build_model(cfg: dict) -> torch.nn.Module:
+def build_model(cfg: SimConfig) -> torch.nn.Module:
     """Build the CNN exactly as train.py does (models.cnn, ``cfg.model``).
 
     ``CNN1`` for the fixed-propagation-length network; ``CNNL`` when
     ``cfg.model.length_head`` is true.
     """
-    m = cfg["model"]
+    m = cfg.model
     kwargs: dict[str, Any] = {
-        "n_modes": m["n_modes"],
-        "mlp_width": m.get("mlp_width", 512),
-        "mlp_depth": m.get("mlp_depth", 4),
-        "dropout": m.get("dropout", 0.0),
+        "n_modes": m.n_modes,
+        "mlp_width": m.mlp_width,
+        "mlp_depth": m.mlp_depth,
+        "dropout": m.dropout,
     }
-    if "channels" in m:
-        kwargs["channels"] = tuple(m["channels"])
-        kwargs.setdefault("pool_size", m.get("pool_size", 18))
-    if m.get("length_head", False):
+    if m.channels is not None:
+        kwargs["channels"] = tuple(m.channels)
+        kwargs.setdefault("pool_size", m.pool_size)
+    if m.length_head:
         return CNNL(**kwargs)
-    if m.get("name") == "CNN1Freq":
+    if m.name == "CNN1Freq":
         freq_kwargs = {
-            "freq_pool": m.get("freq_pool", 8),
-            "freq_refine_ch": m.get("freq_refine_ch", 16),
+            "freq_pool": m.freq_pool,
+            "freq_refine_ch": m.freq_refine_ch,
         }
         return CNN1Freq(**kwargs, **freq_kwargs)
-    if m.get("name") == "CNN1Star":
+    if m.name == "CNN1Star":
         star_kwargs = {
-            "n_modes": m["n_modes"],
-            "mlp_width": m.get("mlp_width", 512),
-            "mlp_depth": m.get("mlp_depth", 4),
-            "dropout": m.get("dropout", 0.0),
-            "base_dim": m.get("base_dim", 32),
-            "depths": tuple(int(d) for d in m.get("depths", (1, 1, 2))),
-            "mlp_ratio": m.get("mlp_ratio", 4),
-            "use_se": m.get("use_se", False),
-            "se_reduction": m.get("se_reduction", 16),
-            "pool_size": m.get("pool_size", 12),
-            "kernel": m.get("kernel", 3),
+            "n_modes": m.n_modes,
+            "mlp_width": m.mlp_width,
+            "mlp_depth": m.mlp_depth,
+            "dropout": m.dropout,
+            "base_dim": m.base_dim,
+            "depths": tuple(int(d) for d in m.depths),
+            "mlp_ratio": m.mlp_ratio,
+            "use_se": m.use_se,
+            "se_reduction": m.se_reduction,
+            "pool_size": m.pool_size,
+            "kernel": m.kernel,
         }
         return CNN1Star(**star_kwargs)
     return CNN1(**kwargs)
@@ -165,7 +161,7 @@ def load_checkpoint(ckpt_path: str, model: torch.nn.Module) -> dict:
 # --------------------------------------------------------------------------- #
 # Data loading + inference
 # --------------------------------------------------------------------------- #
-def load_h5(cfg: dict) -> dict:
+def load_h5(cfg: SimConfig) -> dict:
     """Load the pinned h5 schema produced by data/generate_h5.py.
 
     Datasets: ``/images`` (N_total,3,N,N) uint16, ``/labels`` (N_total,78)
@@ -174,7 +170,7 @@ def load_h5(cfg: dict) -> dict:
     ``/train_idx`` ``/test_idx`` ``/eval_idx``, ``/mu`` ``/sigma`` (78,)
     float32 (TRAIN-split), ``/scale_p`` (3,), ``/vacuum_intensity`` (N,N).
     """
-    path = cfg["data"]["h5_path"]
+    path = cfg.data.h5_path
     with h5py.File(path, "r") as f:
         return {
             "images": f["images"][:],
@@ -229,7 +225,7 @@ def predict(
 # --------------------------------------------------------------------------- #
 # FOM_ML via the physics simulation (lazy import, multiprocessing)
 # --------------------------------------------------------------------------- #
-def _init_worker(cfg: dict) -> None:
+def _init_worker(cfg: SimConfig) -> None:
     """Pool initializer: stash the config for the worker processes."""
     global _WORKER_CFG
     _WORKER_CFG = cfg
@@ -249,7 +245,7 @@ def _fom_worker(args: tuple) -> float:
 
 
 def compute_fom_ml(
-    seeds: np.ndarray, c_pred: np.ndarray, cfg: dict
+    seeds: np.ndarray, c_pred: np.ndarray, cfg: SimConfig
 ) -> Optional[np.ndarray]:
     """Compute ``FOM_ML`` for every eval sample via data.simulate.
 
@@ -266,7 +262,7 @@ def compute_fom_ml(
         print("data.simulate not built — run data/generate_h5.py first")
         return None
 
-    workers = min(int(cfg["data"].get("workers", 1)), 16)
+    workers = min(int(cfg.data.workers), 16)
     items = [(int(s), c) for s, c in zip(seeds, c_pred)]
 
     if workers <= 1:
@@ -341,11 +337,11 @@ def compute_metrics(
 
 
 def build_results(
-    cfg: dict,
+    cfg: SimConfig,
     eval_idx: np.ndarray,
     data: dict,
     foms: dict,
-    fom_ml: Optional[np.ndarray],
+    fom_ml: np.ndarray | None,
     metrics: dict,
 ) -> dict:
     """Assemble the ``results.json`` dict.
@@ -369,8 +365,8 @@ def build_results(
             }
         )
     return {
-        "cfg_json": json.dumps(cfg, sort_keys=True),
-        "n_eval": int(len(eval_idx)),
+        "cfg_json": json.dumps(cfg.to_dict(), sort_keys=True),
+        "n_eval": len(eval_idx),
         "median_fom": metrics["median_fom"],
         "mean_fom": metrics["mean_fom"],
         "gain": metrics["gain"],
@@ -442,7 +438,7 @@ def plot_pred_vs_true(
 
 def plot_fig6(
     foms: dict,
-    fom_ml: Optional[np.ndarray],
+    fom_ml: np.ndarray | None,
     metrics: dict,
     out_dir: str,
 ) -> str:
@@ -486,7 +482,7 @@ def plot_fig6(
 
 def _try_get_sim_images(
     seed: int, cfg: dict, coeffs: np.ndarray
-) -> Optional[dict]:
+) -> dict | None:
     """Best-effort retrieval of object-plane images from data.simulate.
 
     Uses the public ``simulate_sample(seed, cfg, correction_coeffs=coeffs)``
@@ -540,7 +536,7 @@ def _try_get_sim_images(
 
 def plot_samples(
     images_eval: np.ndarray,
-    sim_images: Optional[list],
+    sim_images: list | None,
     out_dir: str,
     n_samples: int = 3,
 ) -> str:
@@ -608,7 +604,7 @@ def plot_samples(
 # WandB
 # --------------------------------------------------------------------------- #
 def log_to_wandb(
-    cfg: dict,
+    cfg: SimConfig,
     metrics: dict,
     figs: dict,
     results_path: str,
@@ -622,12 +618,11 @@ def log_to_wandb(
     """
     if no_wandb:
         return
-    wcfg = cfg.get("wandb", {})
     run = init_wandb(
         cfg,
-        run_name=wcfg.get("run_name") or "evaluation",
-        project=wcfg.get("project", "beaconless-ao-sim"),
-        tags=wcfg.get("tags"),
+        run_name=cfg.wandb.run_name or "evaluation",
+        project=cfg.wandb.project,
+        tags=cfg.wandb.tags,
         job_type="evaluation",
     )
     if run is None:
@@ -674,7 +669,7 @@ def print_report(metrics: dict, n_eval: int) -> None:
 # Orchestration
 # --------------------------------------------------------------------------- #
 def main(
-    cfg: dict,
+    cfg: SimConfig,
     ckpt_path: str,
     no_wandb: bool = False,
     limit: Optional[int] = None,
@@ -687,7 +682,7 @@ def main(
     ``no_wandb``, and prints the report table. Returns the results dict.
     """
     cfg = attach_eval(cfg, ckpt_path)
-    out_dir = cfg["eval"]["out_dir"]
+    out_dir = cfg.eval.out_dir
     os.makedirs(out_dir, exist_ok=True)
 
     # Model + checkpoint.
@@ -710,7 +705,7 @@ def main(
         data["mu"],
         data["sigma"],
         device,
-        batch_size=int(cfg["eval"].get("batch_size", 32)),
+        batch_size=int(cfg.eval.batch_size),
     )
     c_true = np.asarray(data["labels"], dtype=np.float64)[eval_idx]
 
@@ -757,7 +752,7 @@ def main(
     return results
 
 
-def main_cli(argv: Optional[list] = None) -> dict:
+def main_cli(argv: list | None = None) -> dict:
     """Command-line entry point.
 
     ``evaluate.py --config config.yaml --ckpt checkpoints/best.pt
@@ -773,8 +768,7 @@ def main_cli(argv: Optional[list] = None) -> dict:
     parser.add_argument("--limit", type=int, default=None, help="Evaluate only the first N eval samples")
     args = parser.parse_args(argv)
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(args.config)
     return main(cfg, args.ckpt, no_wandb=args.no_wandb, limit=args.limit)
 
 

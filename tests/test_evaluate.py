@@ -11,6 +11,7 @@ scatter). All tests are CPU-only and fast.
 from __future__ import annotations
 
 import builtins
+import copy
 import json
 import os
 import sys
@@ -22,6 +23,7 @@ import pytest
 import torch
 
 from models.cnn import CNN1
+from physics.config import SimConfig
 
 
 # --------------------------------------------------------------------------- #
@@ -69,8 +71,8 @@ def _make_tiny_h5(path, n=32, n_modes=78, N=32):
 
 
 def _make_cfg(tmp_path, h5_path):
-    """Build a minimal config dict with a tiny CNN1 variant."""
-    return {
+    """Build a minimal config with a tiny CNN1 variant."""
+    return SimConfig.from_dict({
         "physical": {
             "N": 32,
             "box_size": 0.3,
@@ -109,7 +111,7 @@ def _make_cfg(tmp_path, h5_path):
             "tags": [],
             "notes": "",
         },
-    }
+    })
 
 
 def _train_tiny_model(cfg, images, labels, steps=10):
@@ -118,14 +120,14 @@ def _train_tiny_model(cfg, images, labels, steps=10):
     train.py does not exist yet, so the model is built directly from cfg.model
     via models.cnn.CNN1 (the same constructor train.py will use).
     """
-    m = cfg["model"]
+    m = cfg.model
     model = CNN1(
-        n_modes=m["n_modes"],
-        channels=tuple(m["channels"]),
-        pool_size=m["pool_size"],
-        mlp_width=m["mlp_width"],
-        mlp_depth=m["mlp_depth"],
-        dropout=m.get("dropout", 0.0),
+        n_modes=m.n_modes,
+        channels=tuple(m.channels),
+        pool_size=m.pool_size,
+        mlp_width=m.mlp_width,
+        mlp_depth=m.mlp_depth,
+        dropout=m.dropout,
     )
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = torch.nn.MSELoss()
@@ -241,9 +243,8 @@ def test_evaluate_without_sim(tiny_env, monkeypatch):
     """Graceful fallback: FOM_ML fields null and plots exclude ML when sim missing."""
     import evaluate
 
-    cfg = dict(tiny_env["cfg"])
-    cfg["eval"] = dict(cfg["eval"])
-    cfg["eval"]["out_dir"] = str(tiny_env["tmp"] / "results_nosim")
+    cfg = copy.deepcopy(tiny_env["cfg"])
+    cfg.eval.out_dir = str(tiny_env["tmp"] / "results_nosim")
 
     real_import = builtins.__import__
 
