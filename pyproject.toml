@@ -22,6 +22,11 @@ dependencies = [
     "wandb>=0.29.0",
 ]
 
+## OOPAO 从 GitHub git 源码安装（与 .venv 实际安装的 commit 8e12a17f 一致）。
+## 注意：不要用 [tool.uv.sources] 的 path 指向 third_party ——那里的包根在
+## third_party/ 而非 third_party 本身，uv 会解析失败。source 由上方
+## "oopao @ git+https://github.com/cheritier/OOPAO.git" 内联指定。
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
