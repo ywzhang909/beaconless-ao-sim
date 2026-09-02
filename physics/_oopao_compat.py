@@ -11,13 +11,19 @@ Upstream ``OOPAO/__init__.py`` is broken in two ways on numpy 2.x + Windows:
    directory was removed when modules were flattened into the top-level
    package). Importing the ``OOPAO`` package therefore always fails.
 
-Workaround: do not import the package ``OOPAO`` at all. Load only the three
-modules we use (``Atmosphere``, ``Source``, ``Telescope``) directly from the
-installed package directory via ``importlib``, and plant a *shadow* ``OOPAO``
-package object (``__path__`` only) in ``sys.modules`` so that relative imports
-inside these modules (``phaseStats`` → ``tools.tools``) resolve without ever
-executing the broken ``OOPAO/__init__.py``. The upstream bugs above are
-sidestepped entirely.
+Workaround: do not import the package ``OOPAO`` at all. Load only the modules
+we use directly from the installed package directory via ``importlib``, and
+plant a *shadow* ``OOPAO`` package object (``__path__`` only) in
+``sys.modules`` so that relative imports inside these modules (``phaseStats``
+→ ``tools.tools``) resolve without ever executing the broken
+``OOPAO/__init__.py``. The upstream bugs above are sidestepped entirely.
+
+Full-suite access (``calibration``, ``closed_loop``,
+``mis_registration_identification_algorithm``) works by appending the source
+checkout's package parent directory to the shadow ``__path__``: upstream
+``setup.cfg`` lists ``packages = OOPAO`` only, so the pip wheel omits those
+sub-packages, but the pinned source clone (same commit ``8e12a17f``) contains
+them and is resolved through the shadow package.
 """
 
 from __future__ import annotations
@@ -30,7 +36,14 @@ from types import ModuleType
 import numpy as np
 
 _PKG_NAME = "OOPAO"
-_MODULES = ("Atmosphere", "Source", "Telescope")
+# All top-level modules we load eagerly (SPRINT loads on demand; it imports
+# ``OOPAO.calibration`` which is available via the appended source path).
+_MODULES = (
+    "Asterism", "Atmosphere", "BioEdge", "DeformableMirror", "Detector",
+    "FieldTransformer", "GainSensingCamera", "InfluenceFunctions", "LiFT",
+    "MisRegistration", "NCPA", "OPD_map", "Pyramid", "ShackHartmann",
+    "SpatialFilter", "Source", "Telescope", "Zernike", "phaseStats",
+)
 
 _spec = importlib.util.find_spec(_PKG_NAME)
 if _spec is None or _spec.origin is None:
@@ -71,8 +84,20 @@ _shadow = ModuleType(_PKG_NAME)
 _shadow.__path__ = [_pkg_dir]
 sys.modules[_PKG_NAME] = _shadow
 
+# 3) ``setup.cfg`` advertises only ``packages = OOPAO``, so the installed wheel
+#    omits the ``calibration/``, ``closed_loop/`` and
+#    ``mis_registration_identification_algorithm/`` sub-packages even though
+#    they live in the source tree. Append the source package parent directory
+#    to the shadow ``__path__`` so ``from OOPAO.calibration.InteractionMatrix
+#    import ...`` resolves through the (pinned, same-commit) source checkout.
+#    Falls back silently when the clone is not present.
+_SOURCE_PKG_DIR = r"D:\Projects\OOPAO\OOPAO"
+if os.path.isdir(_SOURCE_PKG_DIR) and _SOURCE_PKG_DIR not in _shadow.__path__:
+    _shadow.__path__.append(_SOURCE_PKG_DIR)
+
 
 def _load_submodule(name: str) -> ModuleType:
+    """Load an OOPAO top-level module with root-relative imports enabled."""
     path = os.path.join(_pkg_dir, f"{name}.py")
     spec = importlib.util.spec_from_file_location(
         f"{_PKG_NAME}.{name}", path, submodule_search_locations=[_pkg_dir]
@@ -80,6 +105,10 @@ def _load_submodule(name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load OOPAO submodule {name} from {path}")
     mod = importlib.util.module_from_spec(spec)
+    # Root-relative ``from .X import Y`` must resolve against the OOPAO
+    # package (e.g. SPRINT's ``from .calibration.CalibrationVault import``);
+    # without this, the relative import is anchored at ``OOPAO.<name>``.
+    mod.__package__ = _PKG_NAME
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
@@ -90,5 +119,31 @@ _loaded = {name: _load_submodule(name) for name in _MODULES}
 Atmosphere = _loaded["Atmosphere"].Atmosphere
 Source = _loaded["Source"].Source
 Telescope = _loaded["Telescope"].Telescope
+DeformableMirror = _loaded["DeformableMirror"].DeformableMirror
+Zernike = _loaded["Zernike"].Zernike
+Asterism = _loaded["Asterism"].Asterism
+Detector = _loaded["Detector"].Detector
+Pyramid = _loaded["Pyramid"].Pyramid
+ShackHartmann = _loaded["ShackHartmann"].ShackHartmann
+FieldTransformer = _loaded["FieldTransformer"].FieldTransformer
+SpatialFilter = _loaded["SpatialFilter"].SpatialFilter
+NCPA = _loaded["NCPA"].NCPA
+OPD_map = _loaded["OPD_map"].OPD_map
+phaseStats = _loaded["phaseStats"]
+InfluenceFunctions = _loaded["InfluenceFunctions"]
+BioEdge = _loaded["BioEdge"].BioEdge
+GainSensingCamera = _loaded["GainSensingCamera"].GainSensingCamera
+LiFT = _loaded["LiFT"].LiFT
+MisRegistration = _loaded["MisRegistration"].MisRegistration
 
-__all__ = ["Atmosphere", "Source", "Telescope"]
+# Sub-packages resolved through the appended source path:
+#   OOPAO.calibration.InteractionMatrix / compute_KL_modal_basis /
+#   CalibrationVault / get_modal_basis / initialization_AO* ...
+#   OOPAO.closed_loop.run_cl* ...
+#   OOPAO.mis_registration_identification_algorithm.* ...
+__all__ = [
+    "Atmosphere", "Source", "Telescope", "DeformableMirror", "Zernike",
+    "Asterism", "Detector", "Pyramid", "ShackHartmann", "FieldTransformer",
+    "SpatialFilter", "NCPA", "OPD_map", "phaseStats", "InfluenceFunctions",
+    "BioEdge", "GainSensingCamera", "LiFT", "MisRegistration",
+]
