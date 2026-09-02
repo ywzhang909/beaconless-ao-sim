@@ -10,6 +10,7 @@ dependencies = [
     "matplotlib>=3.11.1",
     "numba>=0.67.0",
     "numpy>=2.5.2",
+    "oopao @ git+https://github.com/cheritier/OOPAO.git",
     "pyfftw>=0.15.1",
     "pyyaml>=6.0.3",
     "scikit-image>=0.26.0",
@@ -24,4 +25,11 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "nbformat",
+    "nbclient",
+    "nbconvert"
 ]
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"

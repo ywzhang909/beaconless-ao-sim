@@ -16,8 +16,8 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
    （束腰 `λL/D`）、带**解析抛物面离焦移除**的信标反向传播至瞳孔、从共轭
    信标相位提取的倾斜/倾斜跟踪，以及 78 阶 Zernike 投影
    `Φ_Z78 = M_Z78(M⁺_Z78 Φ_beacon)` 作为 CNN 目标（公式 1–5，算法 B–C）。
-   湍流屏幕从 **OOPAO** 库（`physics/oopao/`，`physics/oopao_backend.py`）
-   中抽取。
+   湍流屏幕从 **OOPAO** 库（`physics/oopao_backend.py` 通过 `OOPAO.Atmosphere`
+   /`OOPAO.Telescope`/`OOPAO.Source`）中抽取。
 2. **多平面成像** — 3 个测量平面（焦平面附近 ±z_R，公式 12）、粗糙表面散射、
    12-bit 量化（公式 13）、标签 z 标准化（公式 14）。
 3. **CNN 训练**（`train.py`，`models/cnn.py`）— 3 阶段 CNN + 4 层 MLP 头部
@@ -33,7 +33,8 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
 ## OOPAO 集成
 
 湍流屏幕生成器已重建为 [OOPAO](https://github.com/cheritier/OOPAO)
-（内嵌于 `physics/oopao/`）。`OopaoScreenBackend` 抽取每层 von-Karman 屏幕，
+（通过 `uv` 从 GitHub 安装；`physics/oopao_backend.py` 调用
+`OOPAO.Atmosphere`/`Telescope`/`Source`）。`OopaoScreenBackend` 抽取每层 von-Karman 屏幕，
 将其中心裁剪至 512×512 的瞳孔网格，并按比例缩放每层振幅至目标每 slab r0
 （`r0_slab = r0_path · n^(3/5)`）。通过 `physical.beam_source` 配置开关选择
 （`soapy | aotools | oopao`；默认 `oopao`）。自定义 FFT 分步传播器、算法 1
@@ -46,8 +47,7 @@ OOPAO 屏幕与 aotools 路径在统计上等效（每 slab OPD 标准差比值 
 ```
 data/simulate.py         算法 1 流水线（屏幕、信标、FOM 分支、数据集）
 data/generate_h5.py      CLI：两趟 HDF5 数据集写入器
-physics/oopao/           内嵌 OOPAO 模块（Atmosphere、Telescope、Source、Zernike……）
-physics/oopao_backend.py OopaoScreenBackend（OOPAO 湍流、r0 缩放）
+physics/oopao_backend.py OopaoScreenBackend（OOPAO 湍流、r0 缩放，通过 uv 从 GitHub 安装的 OOPAO 库）
 physics/                 zernike_aotools、screens_soapy、propagation_fft、scattering
 models/cnn.py            CNN1 / CNNL 架构
 train.py                 训练循环（支持 DDP、梯度累积）

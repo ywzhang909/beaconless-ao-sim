@@ -35,8 +35,7 @@ from __future__ import annotations
 import numpy as np
 
 from physics.screens_soapy import compute_r0
-from physics.oopao import Atmosphere, Telescope
-from physics.oopao.Source import Source
+from physics._oopao_compat import Atmosphere, Source, Telescope
 
 __all__ = ["OopaoScreenBackend"]
 
@@ -138,5 +137,7 @@ class OopaoScreenBackend:
             lay = getattr(self.atm, "layer_%d" % (i + 1))
             # Crop the 2-px margin (layer is N+4, keep the central N) and rescale
             # the reference-r0 phase to the target per-slab r0.
-            out[i] = (np.asarray(lay.OPD)[2:-2, 2:-2] * self._rescale).astype(np.float32)
+            out[i] = (np.asarray(lay.OPD)[2:-2, 2:-2] * self._rescale).astype(
+                np.float32
+            )
         return out

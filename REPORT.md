@@ -62,8 +62,9 @@ flowchart TD
 
 湍流屏幕基底已重建为 **OOPAO** 库
 （[github.com/cheritier/OOPAO](https://github.com/cheritier/OOPAO)），
-内嵌于 `physics/oopao/`（Atmosphere，Telescope，Source，Zernike，phaseStats，
-tools）。
+通过 `uv` 从 GitHub 直接安装（`pyproject.toml` 中的 `oopao @ git+https://
+github.com/cheritier/OOPAO.git`）；`physics/oopao_backend.py` 调用
+`OOPAO.Atmosphere`/`OOPAO.Telescope`/`OOPAO.Source`。
 
 `physics/oopao_backend.py`（`OopaoScreenBackend`）：
 - 从 OOPAO `Atmosphere` 中抽取每层 von-Karman 屏幕。
