@@ -49,7 +49,6 @@ OOPAO 屏幕与 aotools 路径在统计上等效（每 slab OPD 标准差比值 
 
 ```
 data/simulate.py         算法 1 流水线（屏幕、信标、FOM 分支、数据集）
-data/simulate.py         算法 1 流水线（屏幕、信标、FOM 分支、数据集）
 data/generate_h5.py      CLI：单趟 HDF5 数据集写入器
 physics/engine.py        PhysicsEngine / MeasurementSource 抽象 + HardwareMeasurementSource
 physics/oopao_backend.py OopaoScreenBackend（OOPAO 湍流、r0 缩放，通过 uv 从 GitHub 安装的 OOPAO 库）
