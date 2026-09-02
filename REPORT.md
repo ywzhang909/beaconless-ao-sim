@@ -161,7 +161,7 @@ flowchart LR
 atmosphere)，不能在源相位上直接叠加随机 phase。否则会 double-counting 湍流
 相位，产生不一致的 round-trip。
 
-#### 问题 2：：Fresnel 传播大距离 float32 精度丢失
+#### 问题 2：Fresnel 传播大距离 float32 精度丢失
 
 **现象**：`angular_spectrum_intensity` 在大距离 (640–1920 m) 下失效，
 kernel `exp(-i·π·λ·z·f²)` 在 float32 下 wraps 数百万次。
@@ -176,6 +176,57 @@ OOPAO 屏幕被过度驱动 4.8×。
 
 **修复**：OOOAPAO 在 500 nm 下表达 r0 且 OPD 以弧度为单位，
 需进行正确的 PSD 归一化修正，通过测量参考 r0 下的每层 OPD 标准差修复。
+
+#### 问题 5：Fresnel scaled-FFT 后乘二次相位在错误网格上求值（review 发现）
+
+**现象**：`fresnel_propagate` / `fresnel_padded` 的后乘聚焦相位
+`exp(ik(x²+y²)/(2z))` 原来在**输入网格 `dx`** 上求值。但对 scaled-FFT 而言，
+输出场已重采样到**输出网格 `dx2 = λz/(N·dx)`**（padded 版为 `λz/(N_pad·dx)`），
+后乘相位必须按输出坐标计算——否则返回场的**相位**与文档规定的 Fresnel
+约定不符（强度 `|E|²` 不受影响：后乘因子模长为 1）。
+
+**修复**（`physics/propagation_fft.py`）：`fresnel_propagate` 与
+`fresnel_padded` 各自按其输出网格 `dx2` 构造坐标 `vals2` 与半径平方 `r2o`，
+后乘相位改用 `r2o` 求值。
+
+**检测方法**（δ-冲激响应，已固化为测试）：`tests/test_fresnel_scaled_fft.py`
+中 `test_fresnel_padded_impulse_response_matches_analytic` 与
+`test_fresnel_propagate_impulse_response_matches_analytic` 将单位点源
+`E_in[N//2,N//2]=1` 传播后与解析冲激响应比较（按中心像素消除全局相位，
+点源半像素偏置产生的常数相位物理上不可观测）：
+
+```
+h(x2) = e^{ikz}/(iλz) · dx² · exp(ik|x2|²/(2z)),  x2 在输出网格 dx2 上
+```
+
+- 修复前：`rel_err ≈ 1.41`（√2，后乘相位错误网格）
+- 修复后：`rel_err ≈ 1e-8`（complex64 舍入级）
+
+#### 问题 6：能量守恒"失配"与 ASM 对比"失配"——网格约定伪影（非缺陷）
+
+**现象**：对多平面成像做物理校验时发现 (a) 逐平面输出/输入功率比 ≈ 1.87，
+(b) z=50 m 处 Fresnel 与 ASM 逐像素对比明显不符。
+
+**判定**：两者均为**网格约定伪影，非传播物理缺陷**：
+- 功率比 1.87 恰等于 `(dx/dx2)²`（dx=5.8594e-4 m，dx2=0.428 mm）；Fresnel
+  scaled-FFT 使输出采样间距变为 `dx2=λz/(N_pad·dx)`，简单 `Σ|E|²` 对比失去
+  像素面积含义。能量守恒须**面积加权**：
+  `P = Σ|E|²·dA`，且两平面面积不同（`dA2 = dx2²`）。
+- z=50 m 失配比值 19.3 同样恰为 `(dx/dx2)²`（该处 dx2 = λ·50/(N_pad·dx)）；
+  像素级 Fresnel-vs-ASM 对比只有输出网格一致（`dx2 ≈ dx`）才有意义。
+
+**检测方法**（已固化为测试）：
+- `test_area_weighted_power_conservation`：`Σ|E_out|²·dx2² == Σ|E_in|²·dx²`
+  （三距离平面，容差 2%）。
+- `test_gaussian_beam_matches_analytic`：与网格约定无关的物理交叉验证——
+  高斯束传播必须满足解析 `w(z)=w0√(1+(z/zR)²)`（残差 ≈ 4–8% 为输出网格
+  采样误差，随 z/zR 增大而增大）。
+- `test_focal_plane_airy_encircled_energy`：平顶圆孔 + 理想透镜焦点成像，
+  86% 环围能量半径必须为 `1.583·λf/D`（Airy EE(a)=1-J0(a)²-J1(a)²=0.86
+  于 a=4.973），使用与 `data/simulate.py` 相同的管线几何
+  （N=512, dx=5.8594e-4, f=1284.86, D=0.3, N_pad=4096），残差 < 10%。
+  （注意：透镜相位必须中心在网格原点 `(N-1)/2` 且满足采样条件
+  `k·(D/2)·dx/f < π`。）
 
 ---
 

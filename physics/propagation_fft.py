@@ -322,11 +322,19 @@ class Propagator:
         k = 2.0 * np.pi / lam
         dx = self.dx
         # Quadratic phase pre/post-multiply (spatial domain — small argument).
+        # Pre-phase lives on the input grid (dx); the scaled-FFT output is
+        # sampled on the *output* grid dx2 = lam*z/(N*dx) (frequency
+        # f = x2/(lam*z) with f_m = m/(N*dx)), so the post-phase must be
+        # evaluated there too — using dx would corrupt the field phase.
         vals = (np.arange(N) - (N - 1) / 2.0) * dx
         x, y = np.meshgrid(vals, vals)
         r2 = x**2 + y**2
         pre = np.exp(1j * k * r2 / (2.0 * z)).astype(np.complex64)
-        post = np.exp(1j * k * r2 / (2.0 * z)).astype(np.complex64)
+        dx2 = lam * z / (N * dx)
+        vals2 = (np.arange(N) - (N - 1) / 2.0) * dx2
+        x2, y2 = np.meshgrid(vals2, vals2)
+        r2o = x2**2 + y2**2
+        post = np.exp(1j * k * r2o / (2.0 * z)).astype(np.complex64)
         # FFT-based Fresnel propagation.
         E = E_in.astype(np.complex64) * pre
         E = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(E)))
@@ -403,7 +411,13 @@ class Propagator:
         X, Y = np.meshgrid(vals, vals)
         r2p = X**2 + Y**2
         pre = np.exp(1j * k * r2p / (2.0 * z)).astype(np.complex64)
-        post = np.exp(1j * k * r2p / (2.0 * z)).astype(np.complex64)
+        # Output sampled on grid dx2 = lam*z/(N_pad*dx); post-phase must use
+        # *its* coordinates (see fresnel_propagate).
+        dx2 = lam * z / (N_pad * dx)
+        vals2 = (np.arange(N_pad) - (N_pad - 1) / 2.0) * dx2
+        X2, Y2 = np.meshgrid(vals2, vals2)
+        r2o = X2**2 + Y2**2
+        post = np.exp(1j * k * r2o / (2.0 * z)).astype(np.complex64)
         E = E.astype(np.complex64) * pre
         E = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(E)))
         E = E * post
