@@ -9,7 +9,7 @@ prints a summary (splits, per-plane max, label mu/std, median FOMs).
 
 中文：生成 beaconless AO 的 HDF5 数据集的命令行入口（CLI）。
 用法：python -m data.generate_h5 --config config.yaml [-n | --dry]
-读取 YAML 配置，调用 data.simulate.generate_dataset（算法 1 两趟生成），
+读取 YAML 配置，调用 data.simulate.generate_dataset（算法 1 单趟生成），
 并打印摘要（数据划分、逐平面最大值、标签 mu/sigma、各分支中位 FOM）。
 """
 
@@ -132,7 +132,7 @@ def main() -> None:
         print(f"  config_json={json.dumps(cfg)[:120]}...")
         return
 
-    # 实际生成：计时并调用两趟流水线，随后打印摘要
+    # 实际生成：计时并调用单趟流水线，随后打印摘要
     t0 = time.time()
     h5_path = generate_dataset(cfg)  # 返回写出的 HDF5 路径
     elapsed = time.time() - t0

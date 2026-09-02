@@ -16,10 +16,13 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
    （束腰 `λL/D`）、带**解析抛物面离焦移除**的信标反向传播至瞳孔、从共轭
    信标相位提取的倾斜/倾斜跟踪，以及 78 阶 Zernike 投影
    `Φ_Z78 = M_Z78(M⁺_Z78 Φ_beacon)` 作为 CNN 目标（公式 1–5，算法 B–C）。
-   湍流屏幕从 **OOPAO** 库（`physics/oopao_backend.py` 通过 `OOPAO.Atmosphere`
-   /`OOPAO.Telescope`/`OOPAO.Source`）中抽取。
+湍流屏幕从 **OOPAO** 库（`physics/oopao_backend.py` 通过 `OOPAO.Atmosphere`
+   /`OOPAO.Telescope`/`OOPAO.Source`）中抽取。物理正向模型封装为
+   `PhysicsEngine` 抽象接口（`physics/engine.py`，见下文
+   [引擎与测量源抽象](#引擎与测量源抽象)）。
 2. **多平面成像** — 3 个测量平面（焦平面附近 ±z_R，公式 12）、粗糙表面散射、
-   12-bit 量化（公式 13）、标签 z 标准化（公式 14）。
+   12-bit 量化（公式 13）、标签 z 标准化（公式 14）。成像环节封装为
+   `MeasurementSource` 抽象接口，可替换为**相机实测帧**（硬件数据接入）。
 3. **CNN 训练**（`train.py`，`models/cnn.py`）— 3 阶段 CNN + 4 层 MLP 头部
    （第 2.6 节），Adam lr 1e-4，缩放 Zernike 模式上的 MSE，周期性仿真 FOM
    评估。
@@ -46,8 +49,11 @@ OOPAO 屏幕与 aotools 路径在统计上等效（每 slab OPD 标准差比值 
 
 ```
 data/simulate.py         算法 1 流水线（屏幕、信标、FOM 分支、数据集）
-data/generate_h5.py      CLI：两趟 HDF5 数据集写入器
+data/simulate.py         算法 1 流水线（屏幕、信标、FOM 分支、数据集）
+data/generate_h5.py      CLI：单趟 HDF5 数据集写入器
+physics/engine.py        PhysicsEngine / MeasurementSource 抽象 + HardwareMeasurementSource
 physics/oopao_backend.py OopaoScreenBackend（OOPAO 湍流、r0 缩放，通过 uv 从 GitHub 安装的 OOPAO 库）
+docs/oopao/              OOPAO 中文文档 + 可视化 notebook
 physics/                 zernike_aotools、screens_soapy、propagation_fft、scattering
 models/cnn.py            CNN1 / CNNL 架构
 train.py                 训练循环（支持 DDP、梯度累积）
@@ -59,13 +65,46 @@ config.yaml              论文表 1 逐字复现 + 演示规模数据/模型/�
 REPORT.md                全流程报告（数据 → 模型 → 训练 → 评估 → 冒烟测试）
 ```
 
+## 引擎与测量源抽象
+
+数据生成流水线（`generate_dataset` / `simulate_sample`）通过两个抽象接口解耦，
+可在**保持既有 API 完全兼容**的前提下更换物理正向模型或接入硬件采集数据：
+
+- **`PhysicsEngine`**（`physics/engine.py`）— 物理正向模型：湍流屏幕
+  （`make_screens`）、信标反向传播（`beacon_phase_conj`）、倾斜跟踪
+  （`track`）、FOM 分支（`forward_fom`）及 Zernike 投影/重建。默认实现
+  `data.simulate.SimulatedPhysicsEngine` 即原有算法 1 物理链路的一个封装；
+- **`MeasurementSource`**（`physics/engine.py`）— 成像测量源：
+  `acquire(seed, sample_index, screens, phi_track) -> (images, I_obj_track)`。
+  默认 `SimulatedMeasurementSource` 走原粗糙表面散射成像；`HardwareMeasurementSource`
+  直接读取**预先采集的相机帧**（`(3,N,N)` 三平面或 `(N,N)` 单帧复用），
+  中心裁剪/填充至仿真网格 `N×N`，并返回 `I_obj_track=None`（硬件端不提供
+  共轭目标面强度这一物理量）。
+
+接入硬件数据只需注入测量源（标签仍由 `SimulatedPhysicsEngine` 计算）：
+
+```python
+from physics.engine import HardwareMeasurementSource
+from data.simulate import generate_dataset
+
+frames = load_camera_frames()          # (3, N, N) 或 (N, N) float32
+h5 = generate_dataset(cfg, measurement=HardwareMeasurementSource(frames, target_N=N))
+```
+
+硬件测量源强制 `workers=1`（单消费者物理设备/文件流），并会自动警告。
+`I_obj_track` 仅在 `MeasurementSource.acquire` 返回非 `None` 时写入数据集。
+
+数据集生成已改为**单趟**：量化 + 流式写出全部样本到 HDF5 的同时，仅对训练子集
+增量累计逐平面最大值与逐模式标签均值/平方和（公式 13–14），循环结束后一次性
+回填 `mu` / `sigma` / `scale_p`。结果与原两趟实现逐位一致。
+
 ## 快速开始
 
 ```bash
 uv sync                      # 根据 pyproject.toml / uv.lock 创建 .venv
 uv run python -m pytest tests/ -v
 
-# 1. 生成数据集（算法 1，两趟，OOPAO 屏幕）：
+# 1. 生成数据集（算法 1，单趟，OOPAO 屏幕）：
 uv run python -m data.generate_h5 --config config.yaml
 
 # 2. 训练（论文批次 32，通过微批次 8×4 累积实现）：
