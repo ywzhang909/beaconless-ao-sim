@@ -20,3 +20,6 @@ results/*
 !results/results.json
 
 .vscode/settings.json
+
+# local code intelligence index (regenerated on demand)
+.codegraph/
