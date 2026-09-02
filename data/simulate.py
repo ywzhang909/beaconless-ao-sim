@@ -50,6 +50,11 @@ from numba import njit
 from aotools.turbulence.phasescreen import ft_sh_phase_screen
 from tqdm import tqdm
 
+from physics.engine import (
+    HardwareMeasurementSource,
+    MeasurementSource,
+    PhysicsEngine,
+)
 from physics.oopao_backend import OopaoScreenBackend
 from physics.propagation_fft import Propagator
 from physics.scattering import random_roughness_phase
@@ -59,6 +64,9 @@ from utils.metrics import FOM, bucket_mask
 
 __all__ = [
     "SimSample",
+    "SharedSim",
+    "SimulatedPhysicsEngine",
+    "SimulatedMeasurementSource",
     "physics_from_cfg",
     "simulate_sample",
     "simulate_sample_fom",
@@ -790,6 +798,195 @@ def _imaging(
 
 
 # --------------------------------------------------------------------------- #
+# Concrete engine / measurement implementations (back the public sample API)
+# --------------------------------------------------------------------------- #
+class SimulatedPhysicsEngine(PhysicsEngine):
+    """Physics forward model backed by the current finite-difference sim.
+
+    Wraps a :class:`SharedSim` (built once per process and reused) plus the
+    configuration, exposing the :class:`PhysicsEngine` step methods implemented
+    by the existing ``_make_screens`` / ``_beacon_phase_conj`` / ``_tracking`` /
+    ``_fom_leg`` helpers. This is the default engine used when a caller does
+    not inject a custom :class:`PhysicsEngine`.
+
+    中文：基于当前有限差分仿真的物理前向模型。包装一个 :class:`SharedSim`
+    （每进程构建一次并复用）与配置，把 :class:`PhysicsEngine` 的各步骤方法
+    委托给现有的 _make_screens / _beacon_phase_conj / _tracking / _fom_leg。
+    """
+
+    def __init__(self, cfg: dict, shared: Optional[SharedSim] = None) -> None:
+        self.cfg = cfg
+        # Resolve None / SharedSim / physics_from_cfg-tuple to a SharedSim.
+        self._shared = _resolve_shared(shared, cfg)
+
+    # -- read-only state forwarded to the wrapped SharedSim ------------------ #
+    @property
+    def N(self) -> int:
+        return self._shared.N
+
+    @property
+    def dx(self) -> float:
+        return self._shared.dx
+
+    @property
+    def lam(self) -> float:
+        return self._shared.lam
+
+    @property
+    def k(self) -> float:
+        return self._shared.k
+
+    @property
+    def dz(self) -> float:
+        return self._shared.dz
+
+    @property
+    def pupil(self) -> np.ndarray:
+        return self._shared.pupil
+
+    @property
+    def E0(self) -> np.ndarray:
+        return self._shared.E0
+
+    @property
+    def phi_focus(self) -> np.ndarray:
+        return self._shared.phi_focus
+
+    @property
+    def I_vac(self) -> np.ndarray:
+        return self._shared.I_vac
+
+    @property
+    def r2(self) -> np.ndarray:
+        return self._shared.r2
+
+    @property
+    def X(self) -> np.ndarray:
+        return self._shared.X
+
+    @property
+    def Y(self) -> np.ndarray:
+        return self._shared.Y
+
+    @property
+    def G(self) -> np.ndarray:
+        return self._shared.G
+
+    @property
+    def zern(self) -> ZernikeBasis:
+        return self._shared.zern
+
+    @property
+    def f_obj(self) -> float:
+        return self._shared.f_obj
+
+    @property
+    def plane_offsets(self) -> np.ndarray:
+        return self._shared.plane_offsets
+
+    @property
+    def n_screens(self) -> int:
+        return int(self.cfg["physical"]["n_screens"])
+
+    @property
+    def cn2(self) -> float:
+        return float(self.cfg["physical"]["cn2"])
+
+    @property
+    def L0(self) -> float:
+        return float(self.cfg["physical"]["L0"])
+
+    @property
+    def l0_sim(self) -> float:
+        return float(self.cfg["physical"]["l0_sim"])
+
+    # -- PhysicsEngine step methods ----------------------------------------- #
+    def make_screens(self, seed: int) -> np.ndarray:
+        return _make_screens(seed, self.cfg, self._shared)
+
+    def beacon_phase_conj(
+        self, seed: int, screens: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return _beacon_phase_conj(seed, self.cfg, self._shared, screens)
+
+    def track(
+        self, phi_conj: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return _tracking(self._shared, phi_conj)
+
+    def forward_fom(
+        self, screens: np.ndarray, phi_total: np.ndarray
+    ) -> float:
+        return _fom_leg(self._shared, screens, phi_total)
+
+    def phase_to_zernike(self, phi: np.ndarray) -> np.ndarray:
+        return self._shared.zern.phase_to_zernike(phi)
+
+    def zernike_to_phase(self, coeffs: np.ndarray) -> np.ndarray:
+        return self._shared.zern.zernike_to_phase(coeffs)
+
+
+class SimulatedMeasurementSource(MeasurementSource):
+    """Measurement source that forms the image by rough-surface simulation.
+
+    Wraps the existing :func:`_imaging` step: forward-propagates the
+    tracking-only object field, scatters it off rough surfaces, back-propagates
+    through the reversed screens, collimates, focuses and propagates to each
+    measurement plane. This is the default / simulated source. It also returns
+    the tracking-only object-plane intensity ``I_obj_track`` (a byproduct of
+    the propagation).
+
+    中文：通过粗糙面仿真形成图像的测量源。包装现有 _imaging 步骤：目标面场
+    前向传播、粗糙面散射、反向传播、准直、聚焦并传播到各测量平面。
+    """
+
+    def __init__(self, engine: PhysicsEngine, cfg: dict):
+        self._engine = engine
+        self._cfg = cfg
+
+    @property
+    def engine(self) -> PhysicsEngine:
+        return self._engine
+
+    def acquire(
+        self,
+        *,
+        seed: int,
+        sample_index: int,
+        screens: np.ndarray,
+        phi_track: np.ndarray,
+    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        # The simulated source forms images from the physics state; the shared
+        # state is reachable from the wrapped engine's cfg-consistent SharedSim.
+        shared = self._engine._shared  # type: ignore[attr-defined]
+        images, I_obj_track = _imaging(seed, self._cfg, shared, screens, phi_track)
+        return images, I_obj_track
+
+
+def _resolve_engine(
+    engine: Optional[PhysicsEngine],
+    shared: Any,
+    cfg: dict,
+) -> PhysicsEngine:
+    """Resolve the engine from ``engine`` / legacy ``shared`` / ``cfg``.
+
+    Priority:
+      1. ``engine`` if given (a custom :class:`PhysicsEngine`).
+      2. ``shared`` if given — wrap a :class:`SharedSim` (or the
+         ``(Propagator, ZernikeBasis, bucket_mask, dz)`` tuple from
+         :func:`physics_from_cfg`) in a :class:`SimulatedPhysicsEngine`.
+      3. Build a :class:`SimulatedPhysicsEngine` from ``cfg``.
+    """
+    if engine is not None:
+        return engine
+    if shared is not None:
+        # Legacy ``shared`` argument: resolve to a SharedSim via the cfg cache
+        # (handles the physics_from_cfg tuple form as well), then wrap it.
+        return SimulatedPhysicsEngine(cfg, _resolve_shared(shared, cfg))
+    return SimulatedPhysicsEngine(cfg)
+
+
+# --------------------------------------------------------------------------- #
 # Public sample API
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -857,6 +1054,8 @@ def simulate_sample(
     cfg: dict,
     correction_coeffs: Optional[np.ndarray] = None,
     *,
+    engine: Optional[PhysicsEngine] = None,
+    measurement: Optional[MeasurementSource] = None,
     shared: Optional[SharedSim] = None,
 ) -> SimSample:
     """Simulate one sample deterministically given ``seed`` (Algorithm 1).
@@ -878,9 +1077,18 @@ def simulate_sample(
         ``fom_ml`` is filled and the ``'ml'`` beam phase is added.
         中文：(78,) Zernike 系数，用于 ML 校正分支。给出时填充 fom_ml 并
         加入 'ml' 分支光束相位；None 时跳过 ML 分支。
-    shared : SharedSim, optional
-        Prebuilt shared state (avoids rebuild).
-        中文：预构建的共享状态（避免重复构建）。
+    engine : PhysicsEngine, optional
+        Custom physics engine (e.g. a hardware-aware subclass). Defaults to a
+        :class:`SimulatedPhysicsEngine` built from ``cfg``.
+        中文：自定义物理引擎（如硬件感知子类）；默认按 cfg 构建 SimulatedPhysicsEngine。
+    measurement : MeasurementSource, optional
+        Custom measurement source (e.g. :class:`HardwareMeasurementSource`).
+        Defaults to a :class:`SimulatedMeasurementSource`.
+        中文：自定义测量源（如 HardwareMeasurementSource）；默认 SimulatedMeasurementSource。
+    shared : SharedSim, optional (legacy)
+        Prebuilt shared state (avoids rebuild). Superseded by ``engine`` but
+        kept for backward compatibility.
+        中文：预构建的共享状态（避免重复构建）。已被 engine 取代，保留以兼容旧调用。
 
     Returns
     -------
@@ -888,29 +1096,34 @@ def simulate_sample(
         The simulated sample.
         中文：仿真样本（含图像、标签、各分支 FOM 与中间相位）。
     """
-    shared = _resolve_shared(shared, cfg)
-    zern = shared.zern
+    engine = _resolve_engine(engine, shared, cfg)
+    measurement = (
+        measurement
+        if measurement is not None
+        else SimulatedMeasurementSource(engine, cfg)
+    )
+    zern = engine.zern
 
     # Step A: turbulence phase screens.
     # 中文：A. 湍流相位屏（n_screens 层，由 seed 决定）。
-    screens = _make_screens(seed, cfg, shared)
+    screens = engine.make_screens(seed)
 
-    # Step B: aperture beam + focusing phase (precomputed in shared).
-    # 中文：B. 入瞳光束 + 聚焦相位（已在 shared 预计算）。
-    E0 = shared.E0
-    phi_focus = shared.phi_focus
+    # Step B: aperture beam + focusing phase (precomputed in engine).
+    # 中文：B. 入瞳光束 + 聚焦相位（已在 engine 预计算）。
+    E0 = engine.E0
+    phi_focus = engine.phi_focus
 
-    # Step C: vacuum intensity (precomputed in shared).
-    # 中文：C. 真空目标面强度（无湍流参考，已在 shared 预计算）。
-    I_vac = shared.I_vac
+    # Step C: vacuum intensity (precomputed in engine).
+    # 中文：C. 真空目标面强度（无湍流参考，已在 engine 预计算）。
+    I_vac = engine.I_vac
 
     # Step D: beacon back-propagation -> phi_conj (+ beacon intensity).
     # 中文：D. 衍射极限信标反向传播 -> 共轭信标相位 phi_conj。
-    phi_conj, _ = _beacon_phase_conj(seed, cfg, shared, screens)
+    phi_conj, _ = engine.beacon_phase_conj(seed, screens)
 
     # Step E: tracking.
     # 中文：E. 倾斜跟踪（从 phi_conj 的加权梯度得斜率，构造线性斜坡）。
-    phi_track, track_slopes = _tracking(shared, phi_conj)
+    phi_track, track_slopes = engine.track(phi_conj)
 
     # Step F: corrections.
     #
@@ -921,15 +1134,15 @@ def simulate_sample(
     # labels 是共轭信标的 78 阶 Zernike 投影（自然/像素基），即 CNN 训练目标
     # （论文算法 1）；phi_z78 是把这些系数重构回相位。
     phi_beacon = phi_conj - phi_track
-    labels = zern.phase_to_zernike(phi_beacon)
-    phi_z78 = zern.zernike_to_phase(labels)
+    labels = engine.phase_to_zernike(phi_beacon)
+    phi_z78 = engine.zernike_to_phase(labels)
 
     # Step G: FOM legs.
     # 中文：G. 各校正分支 FOM（无 AO / 仅跟踪 / 信标共轭 / 78 阶重构）。
-    fom_noao = _fom_leg(shared, screens, phi_focus)
-    fom_track = _fom_leg(shared, screens, phi_focus + phi_track)
-    fom_beacon = _fom_leg(shared, screens, phi_focus + phi_track + phi_beacon)
-    fom_z78 = _fom_leg(shared, screens, phi_focus + phi_track + phi_z78)
+    fom_noao = engine.forward_fom(screens, phi_focus)
+    fom_track = engine.forward_fom(screens, phi_focus + phi_track)
+    fom_beacon = engine.forward_fom(screens, phi_focus + phi_track + phi_beacon)
+    fom_z78 = engine.forward_fom(screens, phi_focus + phi_track + phi_z78)
 
     # 各分支孔径处总光束相位（聚焦相位 + 各校正相位）
     beam_phases = {
@@ -941,13 +1154,19 @@ def simulate_sample(
     # ML 分支（可选）：用预测的 Zernike 系数做校正，计算其 FOM
     fom_ml: Optional[float] = None
     if correction_coeffs is not None:
-        phi_ml = phi_focus + phi_track + zern.zernike_to_phase(correction_coeffs)
-        fom_ml = _fom_leg(shared, screens, phi_ml)
+        phi_ml = phi_focus + phi_track + engine.zernike_to_phase(correction_coeffs)
+        fom_ml = engine.forward_fom(screens, phi_ml)
         beam_phases["ml"] = phi_ml
 
-    # Step H: imaging (tracking-only condition).
-    # 中文：H. 多平面成像（仅跟踪条件），生成 3 平面图像。
-    images, I_obj_track = _imaging(seed, cfg, shared, screens, phi_track)
+    # Step H: imaging (tracking-only condition) via the measurement source.
+    # 中文：H. 多平面成像（仅跟踪条件），经测量源生成 3 平面图像。
+    master_seed = int(cfg.get("data", {}).get("master_seed", 0))
+    images, I_obj_track = measurement.acquire(
+        seed=seed,
+        sample_index=int(seed) - master_seed,
+        screens=screens,
+        phi_track=phi_track,
+    )
 
     return SimSample(
         seed=seed,
@@ -974,6 +1193,7 @@ def simulate_sample_fom(
     cfg: dict,
     coeffs: np.ndarray,
     *,
+    engine: Optional[PhysicsEngine] = None,
     shared: Optional[SharedSim] = None,
 ) -> float:
     """Fast path: FOM of a beam propagated with ``phi_focus + phi_track + zernike_to_phase(coeffs)``.
@@ -999,6 +1219,10 @@ def simulate_sample_fom(
     shared : SharedSim, optional
         Prebuilt shared state (avoids rebuild).
         中文：预构建的共享状态。
+    engine : PhysicsEngine, optional
+        Custom physics engine (hardware-aware subclass). Defaults to a
+        :class:`SimulatedPhysicsEngine` built from ``cfg``.
+        中文：自定义物理引擎；默认按 cfg 构建 SimulatedPhysicsEngine。
 
     Returns
     -------
@@ -1006,13 +1230,13 @@ def simulate_sample_fom(
         The figure of merit.
         中文：像质因子 FOM（公式 8）。
     """
-    shared = _resolve_shared(shared, cfg)
-    screens = _make_screens(seed, cfg, shared)
-    phi_conj, _ = _beacon_phase_conj(seed, cfg, shared, screens)
-    phi_track, _ = _tracking(shared, phi_conj)
+    engine = _resolve_engine(engine, shared, cfg)
+    screens = engine.make_screens(seed)
+    phi_conj, _ = engine.beacon_phase_conj(seed, screens)
+    phi_track, _ = engine.track(phi_conj)
     # 总相位 = 聚焦 + 跟踪 + 预测系数重构相位
-    phi_total = shared.phi_focus + phi_track + shared.zern.zernike_to_phase(coeffs)
-    return _fom_leg(shared, screens, phi_total)
+    phi_total = engine.phi_focus + phi_track + engine.zernike_to_phase(coeffs)
+    return engine.forward_fom(screens, phi_total)
 
 
 # --------------------------------------------------------------------------- #
@@ -1054,16 +1278,18 @@ def _quantize(images_raw: np.ndarray, scale_p: np.ndarray) -> np.ndarray:
     return scaled.astype(np.uint16)
 
 
-# Worker globals (set once per process via the Pool initializer).
-# 中文：worker 进程全局变量（每个 worker 进程经 Pool initializer 设置一次）。
+# Worker globals (set in the parent before fork, inherited COW by workers).
+# 中文：worker 进程全局变量（父进程在 fork 前设置，worker 经 COW 继承）。
 _WORKER_CFG: Optional[dict] = None
 _WORKER_SHARED: Optional[SharedSim] = None
+_WORKER_ENGINE: Optional[PhysicsEngine] = None
+_WORKER_MEASUREMENT: Optional[MeasurementSource] = None
 
 
 def _worker_init(cfg: dict) -> None:
-    """Pool initializer: build the shared state once per worker process.
+    """Pool initializer: cache cfg + shared state once per worker process.
 
-    中文：Pool 初始化器 —— 每个 worker 进程构建一次共享状态（避免每个
+    中文：Pool 初始化器 —— 每个 worker 进程缓存配置与共享状态（避免每个
     样本重复构建传播器/Zernike 基底）。
     参数 cfg: 配置字典（传入 Pool initargs）。
     """
@@ -1086,7 +1312,13 @@ def _worker_generate(batch: list[tuple[int, int]]) -> list[tuple]:
     """
     out = []
     for idx, seed in batch:
-        s = simulate_sample(seed, _WORKER_CFG, shared=_WORKER_SHARED)
+        s = simulate_sample(
+            seed,
+            _WORKER_CFG,
+            shared=_WORKER_SHARED,
+            engine=_WORKER_ENGINE,
+            measurement=_WORKER_MEASUREMENT,
+        )
         out.append(
             (
                 idx,
@@ -1119,22 +1351,38 @@ def _make_batches(
     return batches
 
 
-def generate_dataset(cfg: dict) -> str:
-    """Run the full two-pass dataset generation pipeline and write the HDF5 file.
+def generate_dataset(
+    cfg: dict,
+    *,
+    engine: Optional[PhysicsEngine] = None,
+    measurement: Optional[MeasurementSource] = None,
+) -> str:
+    """Run the single-pass dataset generation pipeline and write the HDF5 file.
 
-    Pass 1 computes per-plane intensity maxima and per-mode label mean/std over
-    the TRAIN split (Eqs 13-14). Pass 2 quantizes and streams all samples to the
-    HDF5 file (chunked writes, no in-RAM accumulation of raw images).
+    A single streaming pass over all samples quantizes and writes each image,
+    while incrementally accumulating, over the TRAIN split only, the per-plane
+    intensity maxima and the per-mode label mean/std (Eqs 13-14). The results
+    are bit-identical to the previous two-pass version (float64 summation is
+    order-independent), so an existing dataset remains reproducible.
 
-    中文：运行完整两趟数据集生成流水线并写出 HDF5 文件。
-    趟 1：在训练集上计算逐平面强度最大值与逐模式标签均值/标准差（公式 13-14）。
-    趟 2：量化并流式写出全部样本到 HDF5（分块写，不在内存累积原始图像）。
+    中文：运行单趟数据集生成流水线并写出 HDF5 文件。
+    一次性流式写出全部样本到 HDF5（分块写，不在内存累积 raw 图像），同时
+    仅用训练子集增量累计逐平面强度最大值与逐模式标签均值/标准差（公式 13-14）。
+    结果与原先两趟版本逐位一致（float64 求和与顺序无关），旧数据集可复现。.
 
     Parameters
     ----------
     cfg : dict
         Configuration dictionary.
         中文：配置字典（含 physical / data 节）。
+    engine : PhysicsEngine, optional
+        Custom physics engine injected into the workers.
+        中文：自定义物理引擎（注入各 worker）。
+    measurement : MeasurementSource, optional
+        Custom measurement source injected into the workers. A
+        :class:`HardwareMeasurementSource` forces ``workers=1`` (a physical
+        camera cannot be shared across processes).
+        中文：自定义测量源（注入各 worker）。硬件测量源强制 workers=1。
 
     Returns
     -------
@@ -1153,6 +1401,20 @@ def generate_dataset(cfg: dict) -> str:
     h5_path = d["h5_path"]         # HDF5 输出路径
     L = float(p["L"])              # 传播距离 [m]
 
+    # A hardware measurement source cannot be shared across fork'd processes
+    # (a physical device / file stream is single-consumer), so force workers=1.
+    # 中文：硬件测量源无法跨进程共享（物理设备/文件流为单消费者），故强制 workers=1。
+    if isinstance(measurement, HardwareMeasurementSource):
+        if workers != 1:
+            import warnings
+
+            warnings.warn(
+                f"HardwareMeasurementSource forces workers=1 (got {workers}); "
+                "a physical camera cannot be shared across processes.",
+                stacklevel=2,
+            )
+        workers = 1
+
     N_total = n_train + n_test + n_eval
     train_idx = np.arange(n_train, dtype=np.int64)
     test_idx = np.arange(n_train, n_train + n_test, dtype=np.int64)
@@ -1165,97 +1427,119 @@ def generate_dataset(cfg: dict) -> str:
 
     os.makedirs(os.path.dirname(os.path.abspath(h5_path)), exist_ok=True)
 
-    # fork 上下文：子进程继承父进程已构建的 shared（COW，零拷贝）
-    ctx = multiprocessing.get_context("fork")
-    with ctx.Pool(workers, initializer=_worker_init, initargs=(cfg,)) as pool:
-        # ---- Pass 1: train-only stats (Eqs 13-14) ----
-        # 中文：趟 1 —— 仅训练集统计（公式 13-14）
-        plane_max = np.zeros(3, dtype=np.float64)        # 逐平面 raw 强度最大值 (3,)
-        label_sum = np.zeros(N_MODES, dtype=np.float64)  # 逐模式标签累加 (78,)
-        label_sumsq = np.zeros(N_MODES, dtype=np.float64)  # 逐模式标签平方和 (78,)
-        n_proc = 0
-        train_batches = _make_batches(train_idx, master_seed, chunk=4)
-        for batch_result in tqdm(
-            pool.imap_unordered(_worker_generate, train_batches),
-            total=len(train_batches),
-            desc="pass1 (train stats)",
-        ):
-            for (_idx, images_raw, labels, *_rest) in batch_result:
-                plane_max = np.maximum(plane_max, images_raw.max(axis=(1, 2)))
-                label_sum += labels
-                label_sumsq += labels**2
-                n_proc += 1
-        assert n_proc == n_train, f"pass1 processed {n_proc} != n_train {n_train}"
+    n_workers = max(1, workers)
+    if engine is None:
+        engine = SimulatedPhysicsEngine(cfg, shared)
+    if measurement is None:
+        measurement = SimulatedMeasurementSource(engine, cfg)
 
-        # 公式 14：逐模式标签的均值 mu 与标准差 sigma（用于训练时 z 标准化）
-        mu = label_sum / n_train
-        sigma = np.sqrt(np.maximum(label_sumsq / n_train - mu**2, 0.0))
-        scale_p = plane_max.astype(np.float32)  # 逐平面 raw 最大值（schema 兼容）
+    # Set parent-side globals so fork-inherited workers use the injected
+    # engine/measurement (COW, no pickling); restored after the pool closes.
+    # 中文：在父进程设置全局变量，使 fork 继承的 worker 使用注入的引擎/测量源
+    # （COW 零拷贝、免序列化）；池关闭后恢复。
+    global _WORKER_ENGINE, _WORKER_MEASUREMENT
+    _prev_engine, _prev_measurement = _WORKER_ENGINE, _WORKER_MEASUREMENT
+    _WORKER_ENGINE, _WORKER_MEASUREMENT = engine, measurement
+    try:
+        # fork 上下文：子进程继承父进程已构建的 shared（COW，零拷贝）
+        ctx = multiprocessing.get_context("fork")
+        with ctx.Pool(n_workers, initializer=_worker_init, initargs=(cfg,)) as pool:
+            # ---- single pass: quantize + stream all samples to HDF5, while
+            #      accumulating train-only stats (Eqs 13-14) ----
+            # 中文：单趟 —— 量化 + 流式写出全部样本到 HDF5，同时仅用训练子集
+            # 增量累计逐平面最大值与逐模式标签均值/平方和（公式 13-14）。
+            plane_max = np.zeros(3, dtype=np.float64)  # 逐平面 raw 强度最大值 (3,)
+            label_sum = np.zeros(N_MODES, dtype=np.float64)  # 逐模式标签累加 (78,)
+            label_sumsq = np.zeros(N_MODES, dtype=np.float64)  # 逐模式标签平方和 (78,)
+            n_train_proc = 0
 
-        # ---- Pass 2: quantize + stream all samples to HDF5 ----
-        # 中文：趟 2 —— 量化 + 流式写出全部样本到 HDF5
-        with h5py.File(h5_path, "w") as f:
-            # HDF5 schema（分块写，不在内存累积 raw 图像）：
-            #   images (N_total, 3, N, N) uint16 —— 逐样本 3 平面量化图像
-            #   labels (N_total, 78) float32      —— 78 阶 Zernike 系数（训练目标）
-            #   fom_*  (N_total,) float32         —— 各分支 FOM
-            #   seeds / L                          —— 样本种子 / 传播距离
-            #   train/test/eval_idx                —— 数据集划分索引
-            #   mu / sigma (78,)                   —— 标签均值/标准差（公式 14）
-            #   scale_p (3,)                       —— 逐平面 raw 最大值（schema 兼容）
-            #   vacuum_intensity (N, N)            —— 真空目标面强度（无湍流参考）
-            f.create_dataset(
-                "images", (N_total, 3, N, N), dtype=np.uint16, chunks=(1, 3, N, N)
-            )
-            f.create_dataset("labels", (N_total, N_MODES), dtype=np.float32)
-            f.create_dataset("fom_noao", (N_total,), dtype=np.float32)
-            f.create_dataset("fom_track", (N_total,), dtype=np.float32)
-            f.create_dataset("fom_beacon", (N_total,), dtype=np.float32)
-            f.create_dataset("fom_z78", (N_total,), dtype=np.float32)
-            f.create_dataset("seeds", (N_total,), dtype=np.int64)
-            f.create_dataset("L", (N_total,), dtype=np.float32)
-            f.create_dataset("train_idx", (n_train,), dtype=np.int64)
-            f.create_dataset("test_idx", (n_test,), dtype=np.int64)
-            f.create_dataset("eval_idx", (n_eval,), dtype=np.int64)
-            f.create_dataset("mu", (N_MODES,), dtype=np.float32)
-            f.create_dataset("sigma", (N_MODES,), dtype=np.float32)
-            f.create_dataset("scale_p", (3,), dtype=np.float32)
-            f.create_dataset("vacuum_intensity", (N, N), dtype=np.float32)
-            # 把完整配置序列化为 attr，便于离线复现
-            f.attrs["config_json"] = json.dumps(cfg)
+            with h5py.File(h5_path, "w") as f:
+                # HDF5 schema（分块写，不在内存累积 raw 图像）：
+                #   images (N_total, 3, N, N) uint16 —— 逐样本 3 平面量化图像
+                #   labels (N_total, 78) float32      —— 78 阶 Zernike 系数（训练目标）
+                #   fom_*  (N_total,) float32         —— 各分支 FOM
+                #   seeds / L                          —— 样本种子 / 传播距离
+                #   train/test/eval_idx                —— 数据集划分索引
+                #   mu / sigma (78,)                   —— 标签均值/标准差（公式 14）
+                #   scale_p (3,)                       —— 逐平面 raw 最大值（schema 兼容）
+                #   vacuum_intensity (N, N)            —— 真空目标面强度（无湍流参考）
+                f.create_dataset(
+                    "images",
+                    (N_total, 3, N, N),
+                    dtype=np.uint16,
+                    chunks=(1, 3, N, N),
+                )
+                f.create_dataset("labels", (N_total, N_MODES), dtype=np.float32)
+                f.create_dataset("fom_noao", (N_total,), dtype=np.float32)
+                f.create_dataset("fom_track", (N_total,), dtype=np.float32)
+                f.create_dataset("fom_beacon", (N_total,), dtype=np.float32)
+                f.create_dataset("fom_z78", (N_total,), dtype=np.float32)
+                f.create_dataset("seeds", (N_total,), dtype=np.int64)
+                f.create_dataset("L", (N_total,), dtype=np.float32)
+                f.create_dataset("train_idx", (n_train,), dtype=np.int64)
+                f.create_dataset("test_idx", (n_test,), dtype=np.int64)
+                f.create_dataset("eval_idx", (n_eval,), dtype=np.int64)
+                f.create_dataset("mu", (N_MODES,), dtype=np.float32)
+                f.create_dataset("sigma", (N_MODES,), dtype=np.float32)
+                f.create_dataset("scale_p", (3,), dtype=np.float32)
+                f.create_dataset("vacuum_intensity", (N, N), dtype=np.float32)
+                # 把完整配置序列化为 attr，便于离线复现
+                f.attrs["config_json"] = json.dumps(cfg)
 
-            # 流式写出全部样本（按样本索引随机顺序，chunk=4 减小 IPC 等待）
-            all_batches = _make_batches(all_idx, master_seed, chunk=4)
-            for batch_result in tqdm(
-                pool.imap_unordered(_worker_generate, all_batches),
-                total=len(all_batches),
-                desc="pass2 (write)",
-            ):
-                for (
-                    idx,
-                    images_raw,
-                    labels,
-                    fom_noao,
-                    fom_track,
-                    fom_beacon,
-                    fom_z78,
-                ) in batch_result:
-                    f["images"][idx] = _quantize(images_raw, scale_p)
-                    f["labels"][idx] = labels.astype(np.float32)
-                    f["fom_noao"][idx] = fom_noao
-                    f["fom_track"][idx] = fom_track
-                    f["fom_beacon"][idx] = fom_beacon
-                    f["fom_z78"][idx] = fom_z78
+                # 流式写出全部样本（按样本索引随机顺序，chunk=4 减小 IPC 等待）。
+                # 量化用逐图像归一化（_quantize 忽略 scale_p），故 scale_p 可在
+                # 写完后回填；train 子集在写出同时累计统计量。
+                all_batches = _make_batches(all_idx, master_seed, chunk=4)
+                for batch_result in tqdm(
+                    pool.imap_unordered(_worker_generate, all_batches),
+                    total=len(all_batches),
+                    desc="generate (single pass)",
+                ):
+                    for (
+                        idx,
+                        images_raw,
+                        labels,
+                        fom_noao,
+                        fom_track,
+                        fom_beacon,
+                        fom_z78,
+                    ) in batch_result:
+                        f["images"][idx] = _quantize(images_raw, np.zeros(3))
+                        f["labels"][idx] = labels.astype(np.float32)
+                        f["fom_noao"][idx] = fom_noao
+                        f["fom_track"][idx] = fom_track
+                        f["fom_beacon"][idx] = fom_beacon
+                        f["fom_z78"][idx] = fom_z78
+                        # Train-only stats (Eqs 13-14): idx < n_train identifies
+                        # the train split here (train_idx = arange(n_train)).
+                        # 中文：仅训练子集累计统计量（公式 13-14）。
+                        if idx < n_train:
+                            plane_max = np.maximum(
+                                plane_max, images_raw.max(axis=(1, 2))
+                            )
+                            label_sum += labels
+                            label_sumsq += labels**2
+                            n_train_proc += 1
+                assert n_train_proc == n_train, (
+                    f"train stats processed {n_train_proc} != n_train {n_train}"
+                )
 
-            # Metadata（一次性写满的标量/向量元数据）。
-            f["seeds"][:] = master_seed + all_idx
-            f["L"][:] = L
-            f["train_idx"][:] = train_idx
-            f["test_idx"][:] = test_idx
-            f["eval_idx"][:] = eval_idx
-            f["mu"][:] = mu.astype(np.float32)
-            f["sigma"][:] = sigma.astype(np.float32)
-            f["scale_p"][:] = scale_p
-            f["vacuum_intensity"][:] = shared.I_vac
+                # 公式 14：逐模式标签的均值 mu 与标准差 sigma（用于训练时 z 标准化）
+                mu = label_sum / n_train
+                sigma = np.sqrt(np.maximum(label_sumsq / n_train - mu**2, 0.0))
+                scale_p = plane_max.astype(np.float32)  # 逐平面 raw 最大值（schema 兼容）
+
+                # Metadata（一次性写满的标量/向量元数据）。
+                f["seeds"][:] = master_seed + all_idx
+                f["L"][:] = L
+                f["train_idx"][:] = train_idx
+                f["test_idx"][:] = test_idx
+                f["eval_idx"][:] = eval_idx
+                f["mu"][:] = mu.astype(np.float32)
+                f["sigma"][:] = sigma.astype(np.float32)
+                f["scale_p"][:] = scale_p
+                f["vacuum_intensity"][:] = shared.I_vac
+    finally:
+        _WORKER_ENGINE, _WORKER_MEASUREMENT = _prev_engine, _prev_measurement
 
     return h5_path
