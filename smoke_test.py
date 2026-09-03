@@ -58,6 +58,7 @@ def load_raw_h5(path: str) -> dict:
             "seeds": f["seeds"][:],
             "mu": f["mu"][:],
             "sigma": f["sigma"][:],
+            "L": f["L"][:] if "L" in f else None,
         }
 
 
@@ -194,6 +195,10 @@ def main(argv: list | None = None) -> int:
     ]
     all_results = {}
     bs = max(1, args.batch_size)
+    is_cnnl = hasattr(getattr(model, "module", model), "length_head")
+    length_norm = None
+    if is_cnnl and data.get("L") is not None:
+        length_norm = np.asarray(data["L"], dtype=np.float32)[eval_idx] / 1000.0
 
     for method in methods:
         inputs = make_inputs(data["images"], eval_idx, method)
@@ -203,7 +208,11 @@ def main(argv: list | None = None) -> int:
         for i in range(0, len(eval_idx), bs):
             x = torch.from_numpy(inputs[i : i + bs]).to(device)
             with torch.no_grad():
-                y_chunks.append(model(x).cpu().numpy())
+                if is_cnnl:
+                    lt = torch.from_numpy(length_norm[i : i + bs]).to(device)
+                    y_chunks.append(model(x, lt).cpu().numpy())
+                else:
+                    y_chunks.append(model(x).cpu().numpy())
             feat_chunks.append(trunk_features(model, x))
             del x
         y_norm = np.concatenate(y_chunks, axis=0)
