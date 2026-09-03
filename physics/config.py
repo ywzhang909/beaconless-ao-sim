@@ -41,8 +41,20 @@ class PhysicalConfig:
     # 湍流外尺度 [m]：von-Karman 谱的低频截断长度。
     L: float = 1000.0
     # 传播距离 [m]：光源 -> 目标的总路径（CNN1 固定 1 km；CNNL 为 0.5-2.6 km 随机）。
+    L_min: float = 1000.0
+    # [CNNL] 每样本传播距离下界 [m]。L_random=True 时 L_i ~ U[L_min, L_max]；
+    #   L_random=False（CNN1 默认）时 L 恒为 L，本字段仅作范围声明，不参与采样。
+    L_max: float = 1000.0
+    # [CNNL] 每样本传播距离上界 [m]（论文 CNNL: 0.5-2.6 km）。
+    L_random: bool = False
+    # [CNNL] True => 每样本从 [L_min, L_max] 均匀随机抽取传播距离（CNNL 深度分支）；
+    #   False（CNN1 默认）=> 所有样本用固定 L = 1 km（保持既有数据集逐位可复现）。
     rytov_sigma2: float = 0.35
     # Rytov 方差（对数强度起伏方差）[无量纲]，CNN1 固定；CNNL 在 0.1-2.0 随机。
+    rytov_min: float = 0.35
+    # [CNNL] 每样本 Rytov 方差下界（论文 CNNL 在 0.1-2.0 随机）；CNN1 固定 = rytov_sigma2。
+    rytov_max: float = 0.35
+    # [CNNL] 每样本 Rytov 方差上界；CNNL 在 [rytov_min, rytov_max] 均匀抽取。
 
     # --- 光学参数 (Table 1) ---
     Dscope: float = 0.30

@@ -116,13 +116,29 @@ class OopaoScreenBackend:
         # OOPAO's AO-loop / WFS machinery. This also avoids jsonpickle caching.
         self.atm.initializeAtmosphere(self.tel, compute_covariance=False)
 
-    def make_screens(self, seed: int) -> np.ndarray:
+    def make_screens(
+        self, seed: int, r0_slab: float | None = None
+    ) -> np.ndarray:
         """Draw ``n_screens`` fresh OOPAO screens for sample ``seed``.
 
         Parameters
         ----------
         seed : int
             Sample seed; OOPAO reseeds every layer with ``seed + i_layer``.
+        r0_slab : float, optional
+            Per-sample per-slab r0 [m] (CNNL: varies with propagation distance
+            L). When given, the reference-r0 OOPAO layers are rescaled to this
+            target per-slab r0 instead of the constant-L ``self.r0_slab``.
+            Because the von-Karman PSD scales as ``r0**(-5/3)``, a constant
+            amplitude rescale ``(r0_slab / r0_ref)**(5/6)`` is a statistically
+            exact r0 change (PSD shape in r/L0/l0 is preserved). The OOPAO
+            layer *realizations* are L-independent random fields; only the
+            amplitude rescale changes with per-L r0, so no atmosphere rebuild
+            is needed. 中文：每样本每 slab r0 [m]（CNNL：随 L 变化）；给出时
+            把参考 r0 的 OOPAO 层重缩放到该目标 r0，而非常数 L 的 self.r0_slab。
+            波数谱随 r0**(-5/3) 缩放，故常数振幅重缩放 (r0_slab/r0_ref)**(5/6)
+            在统计上精确（PSD 形状不变）。OOPAO 层实现在 L 上无关，仅振幅重
+            缩放随逐 L r0 变化，无需重建大气。
 
         Returns
         -------
@@ -131,13 +147,20 @@ class OopaoScreenBackend:
             from OOPAO's ``N+4``-pixel layers and rescaled to the target per-slab
             r0.
         """
+        # Per-L rescale override (Option B): when a per-sample r0_slab is given
+        # (CNNL), rescale the reference-r0 layers to it instead of the constant
+        # L value stored at construction. 中文：逐 L 重缩放（选项 B）——
+        # 当给定逐样本 r0_slab（CNNL）时，按它而非构造时的常数 L 值重缩放。
+        rescale = self._rescale
+        if r0_slab is not None:
+            rescale = (float(r0_slab) / _R0_REF_500) ** (5.0 / 6.0)
         self.atm.generateNewPhaseScreen(seed=int(seed))
         out = np.empty((self.n_screens, self.N, self.N), dtype=np.float32)
         for i in range(self.n_screens):
             lay = getattr(self.atm, "layer_%d" % (i + 1))
             # Crop the 2-px margin (layer is N+4, keep the central N) and rescale
             # the reference-r0 phase to the target per-slab r0.
-            out[i] = (np.asarray(lay.OPD)[2:-2, 2:-2] * self._rescale).astype(
+            out[i] = (np.asarray(lay.OPD)[2:-2, 2:-2] * rescale).astype(
                 np.float32
             )
         return out

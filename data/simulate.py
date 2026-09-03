@@ -65,10 +65,14 @@ from utils.metrics import FOM, bucket_mask
 
 __all__ = [
     "SimSample",
+    "SimSampleState",
     "SharedSim",
     "SimulatedPhysicsEngine",
     "SimulatedMeasurementSource",
     "physics_from_cfg",
+    "compute_L",
+    "compute_rytov",
+    "make_state",
     "simulate_sample",
     "simulate_sample_fom",
     "vacuum_intensity",
@@ -136,6 +140,194 @@ class SharedSim:
     plane_offsets: np.ndarray  # (3,) distances behind objective lens [m]
     # OOPAO 屏幕后端；仅当 beam_source == "oopao" 时设置
     oopao: Optional[OopaoScreenBackend] = None  # set when beam_source == "oopao"
+
+
+# --------------------------------------------------------------------------- #
+# Per-sample propagation-distance state (CNNL: L varies 0.5-2.6 km)
+# --------------------------------------------------------------------------- #
+@dataclass
+class SimSampleState:
+    """Per-sample physical state that depends on propagation distance ``L``.
+
+    In CNN1 mode (``L_random=False``) every sample shares the same ``L`` and
+    this state is identical to the ``SharedSim`` fields it wraps. In CNNL mode
+    (``L_random=True``) ``L`` is drawn per sample from ``U[L_min, L_max]``,
+    and all L-dependent quantities (focal phase, vacuum intensity, imaging
+    geometry, bucket mask, per-slab r0) are recomputed for that ``L`` while
+    L-independent quantities (propagator, Zernike basis, grids, aperture beam,
+    Gaussian tilt weight) are reused from the base ``SharedSim``.
+
+    中文：每样本依赖传播距离 L 的物理状态。CNN1 模式（L_random=False）下所有
+    样本共享同一 L，本状态与 SharedSim 字段一致；CNNL 模式（L_random=True）下
+    L 从 U[L_min, L_max] 逐样本抽取，所有 L 依赖量（聚焦相位、真空强度、成像
+    几何、桶掩膜、每 slab r0）按该 L 重算，L 无关量（传播器、Zernike 基底、
+    网格、孔径光束、倾斜高斯）复用自基础 SharedSim。
+    """
+
+    L: float
+    phi_focus: np.ndarray
+    I_vac: np.ndarray
+    zR_APWS: float
+    f_obj: float
+    plane_offsets: np.ndarray
+    bucket_mask: np.ndarray
+    r0_slab: float
+    n_screens: int
+    focal: float
+    X: np.ndarray
+    Y: np.ndarray
+    prop: Propagator
+    zern: ZernikeBasis
+    E0: np.ndarray
+    G: np.ndarray
+    r2: np.ndarray
+    pupil: np.ndarray
+    N: int
+    dx: float
+    lam: float
+    k: float
+    rspot: float
+    Dscope: float
+    dz: float
+    L0: float
+    l0_sim: float
+    cn2: float
+    oopao: Optional[OopaoScreenBackend] = None
+
+
+def compute_L(seed: int, p: Any) -> float:
+    """Draw the per-sample propagation distance.
+
+    When ``p.L_random`` is False (CNN1 default) the fixed ``p.L`` is returned.
+    When True (CNNL), a uniform draw from ``[L_min, L_max]`` is made using a
+    ``np.random.default_rng`` seeded from ``seed`` so the draw is deterministic
+    and independent of the screen-generation RNG stream (which uses
+    ``seed + i`` per screen) and the roughness stream (``seed * 31 + j``).
+
+    中文：抽取每样本传播距离。L_random=False（CNN1 默认）返回固定 p.L；
+    True（CNNL）时用从 seed 派生的 default_rng 从 [L_min, L_max] 均匀抽取，
+    保证确定性且与屏生成流（seed+i）及粗糙面流（seed*31+j）不冲突。
+    """
+    if not getattr(p, "L_random", False):
+        return float(p.L)
+    rng = np.random.default_rng(seed + 999_983)
+    lo = float(p.L_min)
+    hi = float(p.L_max)
+    return lo + (hi - lo) * rng.random()
+
+
+def compute_rytov(seed: int, p: Any) -> float:
+    """Draw the per-sample Rytov variance.
+
+    When ``p.L_random`` is False (CNN1) the fixed ``p.rytov_sigma2`` is
+    returned. When True (CNNL), a uniform draw from ``[rytov_min, rytov_max]``
+    is made using a separate seed stream (``seed + 999_983 + 7919``) to stay
+    independent of the L draw.
+
+    中文：抽取每样本 Rytov 方差。L_random=False（CNN1）返回固定 p.rytov_sigma2；
+    True（CNNL）时用独立种子流从 [rytov_min, rytov_max] 均匀抽取。
+    """
+    if not getattr(p, "L_random", False):
+        return float(p.rytov_sigma2)
+    rng = np.random.default_rng(seed + 999_983 + 7919)
+    lo = float(p.rytov_min)
+    hi = float(p.rytov_max)
+    return lo + (hi - lo) * rng.random()
+
+
+def _bucket_mask_for_L(
+    N: int, lam: float, focal: float, Dscope: float, diameter_frac: float, dx: float
+) -> np.ndarray:
+    """Compute the FOM bucket mask for a given focal length (Eq. 6).
+
+    D_bucket = diameter_frac * lam * focal / Dscope [m]; diameter_px = D_bucket / dx.
+    中文：按给定焦距计算 FOM 桶掩膜（公式 6）。D_bucket = diameter_frac · λ · f / D，
+    diameter_px = D_bucket / dx。
+    """
+    D_bucket = diameter_frac * lam * focal / Dscope
+    diameter_px = D_bucket / dx
+    return bucket_mask(N, diameter_px)
+
+
+def make_state(cfg: "SimConfig", shared: "SharedSim", L: float) -> SimSampleState:
+    """Build a per-sample :class:`SimSampleState` for propagation distance ``L``.
+
+    Reuses L-independent quantities (prop, zern, grids, E0, G, pupil, r2) from
+    the base ``shared`` and recomputes L-dependent quantities (focal phase,
+    vacuum intensity, imaging geometry, bucket mask, per-slab r0, n_screens).
+
+    中文：为传播距离 L 构建每样本状态。复用 SharedSim 中 L 无关量，重算
+    L 依赖量（聚焦相位、真空强度、成像几何、桶掩膜、每 slab r0、屏层数）。
+    """
+    p = cfg.physical
+    img = cfg.imaging
+    b = cfg.bucket
+
+    N = shared.N
+    dx = shared.dx
+    lam = shared.lam
+    k = shared.k
+    rspot = shared.rspot
+    Dscope = float(p.Dscope)
+
+    # --- L-dependent quantities ---
+    focal = float(L)  # f = L (Table 1: focusing at target)
+    phi_focus = -k * shared.r2 / (2.0 * focal)
+
+    # Vacuum intensity: |E0 * exp(i*phi_focus) propagated L|^2 (no turbulence).
+    # 真空强度：|E0 e^{i phi_focus} 传播 L|^2（无湍流屏）。
+    I_vac = shared.prop.angular_spectrum_intensity(
+        (shared.E0 * np.exp(1j * phi_focus)).astype(np.complex64), float(L)
+    )
+
+    # Imaging geometry (Eqs. 9-12): zR = r0^2 / (pi * lam), f_obj = 2 * zR
+    # where r0 = (0.423 * k^2 * cn2 * L)^(-3/5)
+    r0_path = compute_r0(lam, float(p.cn2), float(L))
+    zR = (r0_path**2) / (np.pi * lam)
+    f_obj = 2.0 * zR
+    offsets = (np.array(img.plane_offset_frac, dtype=np.float64) - 1.0) * zR
+    plane_offsets = f_obj + offsets
+
+    # Bucket mask (Eq. 6): D_bucket = diameter_frac * lam * focal / Dscope
+    bucket_mask = _bucket_mask_for_L(
+        N, lam, focal, Dscope, float(b.diameter_frac), dx
+    )
+
+    # Per-slab r0 and screen count
+    n_screens = int(p.n_screens)
+    r0_slab = r0_path * n_screens ** (3.0 / 5.0)
+
+    return SimSampleState(
+        L=float(L),
+        phi_focus=phi_focus,
+        I_vac=I_vac,
+        zR_APWS=zR,
+        f_obj=f_obj,
+        plane_offsets=plane_offsets,
+        bucket_mask=bucket_mask,
+        r0_slab=r0_slab,
+        n_screens=n_screens,
+        focal=focal,
+        X=shared.X,
+        Y=shared.Y,
+        prop=shared.prop,
+        zern=shared.zern,
+        E0=shared.E0,
+        G=shared.G,
+        r2=shared.r2,
+        pupil=shared.pupil,
+        N=N,
+        dx=dx,
+        lam=lam,
+        k=k,
+        rspot=rspot,
+        Dscope=Dscope,
+        dz=shared.dz,
+        L0=float(p.L0),
+        l0_sim=float(p.l0_sim),
+        cn2=float(p.cn2),
+        oopao=shared.oopao,
+    )
 
 
 _shared_cache: dict[tuple, SharedSim] = {}
@@ -286,18 +478,20 @@ def _get_shared(cfg: SimConfig) -> SharedSim:
 
 
 def _resolve_shared(shared: Any, cfg: SimConfig) -> SharedSim:
-    """Resolve the ``shared`` argument to a :class:`SharedSim`.
+    """Resolve the ``shared`` argument to a :class:`SharedSim` or :class:`SimSampleState`.
 
-    Accepts ``None`` (build/cache from ``cfg``), a :class:`SharedSim`, or the
+    Accepts ``None`` (build/cache from ``cfg``), a :class:`SharedSim`, a
+    :class:`SimSampleState` (passed through), or the
     ``(Propagator, ZernikeBasis, bucket_mask, dz)`` tuple returned by
     :func:`physics_from_cfg` (resolved through the per-cfg cache).
 
-    中文：把 ``shared`` 参数统一解析成 :class:`SharedSim`。
-    接受 None（从 cfg 构建/取缓存）、SharedSim 实例、或 physics_from_cfg
-    返回的元组（经 cfg 缓存解析）。
+    中文：把 ``shared`` 参数统一解析。接受 None、SharedSim、SimSampleState
+    （直接透传）、或 physics_from_cfg 返回的元组（经 cfg 缓存解析）。
     """
     if shared is None or isinstance(shared, SharedSim):
         return shared if isinstance(shared, SharedSim) else _get_shared(cfg)
+    if isinstance(shared, SimSampleState):
+        return shared
     # Tuple from physics_from_cfg -> resolve via the cfg cache.
     # 元组形式 -> 通过 cfg 缓存解析（元组本身不携带足够重建信息）
     return _get_shared(cfg)
@@ -379,9 +573,9 @@ def _make_screens(seed: int, cfg: SimConfig, shared: Any) -> np.ndarray:
     cfg : SimConfig
         Configuration object.
         中文：配置对象。
-    shared : SharedSim or tuple
-        Shared state (provides N, dx, L0, l0_sim, lam).
-        中文：共享状态（提供 N, dx, L0, l0_sim, lam 等）。
+    shared : SharedSim or SimSampleState or tuple
+        Shared state (provides N, dx, L0, l0_sim, lam, r0_slab).
+        中文：共享状态（提供 N, dx, L0, l0_sim, lam, r0_slab 等）。
 
     Returns
     -------
@@ -394,21 +588,23 @@ def _make_screens(seed: int, cfg: SimConfig, shared: Any) -> np.ndarray:
 
     if shared.oopao is not None:
         # OOPAO path: per-layer screens drawn from the shared OOPAO Atmosphere,
-        # each already rescaled to the target per-slab r0 and cropped to N x N.
-        # 中文：OOPAO 路径 —— 从共享 OOPAO 大气中逐层抽取屏幕，每层已缩放到
-        # 目标每 slab r0 并裁剪到 N×N。
-        return shared.oopao.make_screens(seed)
+        # each rescaled to the target per-slab r0 and cropped to N x N.
+        # CNNL (Option B): pass the per-sample r0_slab so turbulence amplitude
+        # scales with the per-sample propagation distance L (no atmosphere
+        # rebuild — only the reference-r0 -> per-L-r0 rescale changes).
+        # 中文：OOPAO 路径 —— 从共享 OOPAO 大气中逐层抽取屏幕，每层重缩放到
+        # 目标每 slab r0 并裁剪到 N×N。CNNL（选项 B）：传入逐样本 r0_slab，
+        # 使湍流振幅随逐样本传播距离 L 缩放（无需重建大气 —— 仅参考 r0 ->
+        # 逐 L r0 的重缩放变化）。
+        r0_slab = getattr(shared, "r0_slab", None)
+        return shared.oopao.make_screens(seed, r0_slab=r0_slab)
 
     n_screens = int(p.n_screens)  # 屏层数（= L / screen_sep，表 1 = 10）
-    # Per-slab coherence length. ``compute_r0`` returns the path-integrated r0
-    # for the full L. Each of the ``n_screens`` slabs (thickness L/n_screens)
-    # carries r0_slab = r0_path * n_screens**(3/5); using the path r0 for every
-    # slab would make the total turbulence ~n_screens**(3/5) times too strong.
-    # 中文：每 slab 相干长度。compute_r0 返回整条 L 路径积分的 r0；
-    # n_screens 个 slab（厚 L/n_screens）各取 r0_slab = r0_path * n^(3/5)。
-    # 若每层都用整条路径的 r0，总湍流强度会偏大 ~n^(3/5) 倍。
-    r0_path = compute_r0(shared.lam, float(p.cn2), float(p.L))  # 整条路径 r0 [m]
-    r0_slab = r0_path * n_screens ** (3.0 / 5.0)  # 每 slab r0 [m]
+    # Per-slab r0: if state has r0_slab (per-L), use it; else compute from p.L.
+    r0_slab = getattr(shared, "r0_slab", None)
+    if r0_slab is None:
+        r0_path = compute_r0(shared.lam, float(p.cn2), float(p.L))
+        r0_slab = r0_path * n_screens ** (3.0 / 5.0)
     l0_sim = float(p.l0_sim)  # 内尺度 [m]（仿真守护值，表 1 = 0.01 m）
     L0 = float(p.L0)  # 外尺度 [m]（表 1 = 100 m）
     screens = np.stack(
@@ -597,7 +793,8 @@ def _beacon_phase_conj(
     # 中文：衍射极限信标 —— 目标面的小高斯，束腰等于望远镜看到的衍射极限
     # w = λ·L/Dscope（约 2.7 mm）。单像素 delta 的角谱平坦（无限带宽），会使
     # 反向传播相位在数值上失真、与真实湍流不相关，故用有限束腰高斯。
-    w = shared.lam * float(p.L) / float(p.Dscope)  # 信标束腰 [m]
+    L_eff = getattr(shared, "L", None) or float(p.L)
+    w = shared.lam * L_eff / float(p.Dscope)  # 信标束腰 [m]
     E_pt = (np.exp(-shared.r2 / w**2) * shared.pupil).astype(
         np.complex64
     )  # 信标场 (复)
@@ -876,6 +1073,42 @@ def _imaging(
     return images, I_obj_track
 
 
+def _object_plane_intensity(
+    shared: Any,
+    screens: np.ndarray,
+    phi_total: np.ndarray,
+) -> np.ndarray:
+    """Object-plane (remote target) intensity for a total aperture phase.
+
+    Propagates ``E0 * exp(1j * phi_total)`` forward through the turbulence
+    ``screens`` and returns ``|E|**2`` at the target plane.  This is the
+    remote light field the laser actually illuminates after applying the
+    ``phi_total`` correction (e.g. tracking + ML-predicted Zernike).
+
+    中文：给定孔径总相位，计算目标面（远程）光强。把 ``E0*exp(i·phi_total)``
+    前向传播穿过湍流屏，返回目标面 ``|E|^2``。即施加 ``phi_total`` 校正
+    （如跟踪 + ML 预测的 Zernike）后激光实际照射的远程光场。
+
+    Parameters
+    ----------
+    shared : SharedSim or SimSampleState
+        Shared state (provides ``prop``, ``E0``, ``dz``).
+    screens : np.ndarray
+        ``(n_screens, N, N)`` float32 phase screens.
+    phi_total : np.ndarray
+        ``(N, N)`` float64 total aperture phase [rad].
+
+    Returns
+    -------
+    np.ndarray
+        ``(N, N)`` float32 object-plane intensity.
+        中文：(N, N) float32 目标面光强。
+    """
+    E = (shared.E0 * np.exp(1j * phi_total)).astype(np.complex64)
+    E_obj = shared.prop.split_step(E, screens, shared.dz)
+    return (np.abs(E_obj) ** 2).astype(np.float32)
+
+
 # --------------------------------------------------------------------------- #
 # Concrete engine / measurement implementations (back the public sample API)
 # --------------------------------------------------------------------------- #
@@ -897,6 +1130,10 @@ class SimulatedPhysicsEngine(PhysicsEngine):
         self.cfg = cfg
         # Resolve None / SharedSim / physics_from_cfg-tuple to a SharedSim.
         self._shared = _resolve_shared(shared, cfg)
+        self._state = None
+        # Per-sample state (set before each sample call). Falls back to the
+        # base SharedSim when not set (CNN1 fixed-L backward-compat).
+        self._state: Any = None
 
     # -- read-only state forwarded to the wrapped SharedSim ------------------ #
     @property
@@ -980,19 +1217,25 @@ class SimulatedPhysicsEngine(PhysicsEngine):
         return float(self.cfg.physical.l0_sim)
 
     # -- PhysicsEngine step methods ----------------------------------------- #
+    def _active(self):
+        return self._state if self._state is not None else self._shared
+
+    def set_state(self, state: Any) -> None:
+        self._state = state
+
     def make_screens(self, seed: int) -> np.ndarray:
-        return _make_screens(seed, self.cfg, self._shared)
+        return _make_screens(seed, self.cfg, self._active())
 
     def beacon_phase_conj(
         self, seed: int, screens: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        return _beacon_phase_conj(seed, self.cfg, self._shared, screens)
+        return _beacon_phase_conj(seed, self.cfg, self._active(), screens)
 
     def track(self, phi_conj: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return _tracking(self._shared, phi_conj)
+        return _tracking(self._active(), phi_conj)
 
     def forward_fom(self, screens: np.ndarray, phi_total: np.ndarray) -> float:
-        return _fom_leg(self._shared, screens, phi_total)
+        return _fom_leg(self._active(), screens, phi_total)
 
     def phase_to_zernike(self, phi: np.ndarray) -> np.ndarray:
         return self._shared.zern.phase_to_zernike(phi)
@@ -1031,9 +1274,8 @@ class SimulatedMeasurementSource(MeasurementSource):
         screens: np.ndarray,
         phi_track: np.ndarray,
     ) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        # The simulated source forms images from the physics state; the shared
-        # state is reachable from the wrapped engine's cfg-consistent SharedSim.
-        shared = self._engine._shared  # type: ignore[attr-defined]
+        state = getattr(self._engine, "_state", None)
+        shared = state if state is not None else self._engine._shared
         images, I_obj_track = _imaging(seed, self._cfg, shared, screens, phi_track)
         return images, I_obj_track
 
@@ -1095,6 +1337,15 @@ class SimSample:
     I_obj_track : np.ndarray
         ``(N, N)`` float32 tracking-only object-plane intensity.
         中文：(N, N) float32 仅跟踪目标面强度。
+    I_obj_ml : np.ndarray | None
+        ``(N, N)`` float32 remote (object-plane) intensity AFTER applying the
+        ML-predicted phase correction (tracking + CNN Zernike leg). Filled only
+        when ``correction_coeffs`` is passed; ``None`` otherwise. Used for
+        WandB visualization of the remote light field the laser actually
+        illuminates after the CNN correction. 中文：(N, N) float32 施加 ML 预测
+        相位校正（跟踪 + CNN Zernike 分支）后的远程目标面光强；仅在传入
+        correction_coeffs 时填充，否则 None。用于 WandB 可视化 CNN 校正后激光
+        实际照射的远程光场。
     track_slopes : np.ndarray
         ``(2,)`` float64 ``[a_x, a_y]`` of the tilt phase map.
         中文：(2,) float64 倾斜相位图的斜率 [a_x, a_y]（rad/m）。
@@ -1104,9 +1355,13 @@ class SimSample:
     beam_phases : dict
         Total beam phase at the aperture for each FOM leg.
         中文：dict，各 FOM 分支在孔径处的总光束相位 [rad]。
+    L : float
+        Per-sample propagation distance in metres (CNNL: 0.5–2.6 km).
+        中文：每样本传播距离 [m]（CNNL：0.5–2.6 km）。
     """
 
     seed: int
+    L: float
     images: np.ndarray
     labels: np.ndarray
     fom_noao: float
@@ -1122,6 +1377,7 @@ class SimSample:
     phase_beacon: np.ndarray
     phase_z78: np.ndarray
     beam_phases: dict = field(default_factory=dict)
+    I_obj_ml: Optional[np.ndarray] = None
 
 
 def simulate_sample(
@@ -1177,27 +1433,24 @@ def simulate_sample(
         if measurement is not None
         else SimulatedMeasurementSource(engine, cfg)
     )
-    zern = engine.zern
+    shared = _get_shared(cfg)
+    L = compute_L(seed, cfg.physical)
+    state = make_state(cfg, shared, L)
+    engine.set_state(state)
 
     # Step A: turbulence phase screens.
-    # 中文：A. 湍流相位屏（n_screens 层，由 seed 决定）。
     screens = engine.make_screens(seed)
 
-    # Step B: aperture beam + focusing phase (precomputed in engine).
-    # 中文：B. 入瞳光束 + 聚焦相位（已在 engine 预计算）。
-    E0 = engine.E0
-    phi_focus = engine.phi_focus
+    # Step B: per-sample focusing phase (depends on L).
+    phi_focus = state.phi_focus
 
-    # Step C: vacuum intensity (precomputed in engine).
-    # 中文：C. 真空目标面强度（无湍流参考，已在 engine 预计算）。
-    I_vac = engine.I_vac
+    # Step C: per-sample vacuum intensity (depends on L).
+    I_vac = state.I_vac
 
     # Step D: beacon back-propagation -> phi_conj (+ beacon intensity).
-    # 中文：D. 衍射极限信标反向传播 -> 共轭信标相位 phi_conj。
     phi_conj, _ = engine.beacon_phase_conj(seed, screens)
 
     # Step E: tracking.
-    # 中文：E. 倾斜跟踪（从 phi_conj 的加权梯度得斜率，构造线性斜坡）。
     phi_track, track_slopes = engine.track(phi_conj)
 
     # Step F: corrections.
@@ -1228,10 +1481,13 @@ def simulate_sample(
     }
     # ML 分支（可选）：用预测的 Zernike 系数做校正，计算其 FOM
     fom_ml: Optional[float] = None
+    I_obj_ml: Optional[np.ndarray] = None
     if correction_coeffs is not None:
         phi_ml = phi_focus + phi_track + engine.zernike_to_phase(correction_coeffs)
         fom_ml = engine.forward_fom(screens, phi_ml)
         beam_phases["ml"] = phi_ml
+        # 远程目标面光场（施加 ML 校正后激光实际照射的远程光场），用于 WandB 可视化
+        I_obj_ml = _object_plane_intensity(state, screens, phi_ml)
 
     # Step H: imaging (tracking-only condition) via the measurement source.
     # 中文：H. 多平面成像（仅跟踪条件），经测量源生成 3 平面图像。
@@ -1245,6 +1501,7 @@ def simulate_sample(
 
     return SimSample(
         seed=seed,
+        L=L,
         images=images,
         labels=labels,
         fom_noao=fom_noao,
@@ -1260,6 +1517,7 @@ def simulate_sample(
         phase_beacon=phi_beacon,
         phase_z78=phi_z78,
         beam_phases=beam_phases,
+        I_obj_ml=I_obj_ml,
     )
 
 
@@ -1270,6 +1528,7 @@ def simulate_sample_fom(
     *,
     engine: Optional[PhysicsEngine] = None,
     shared: Optional[SharedSim] = None,
+    L: Optional[float] = None,
 ) -> float:
     """Fast path: FOM of a beam propagated with ``phi_focus + phi_track + zernike_to_phase(coeffs)``.
 
@@ -1298,6 +1557,9 @@ def simulate_sample_fom(
         Custom physics engine (hardware-aware subclass). Defaults to a
         :class:`SimulatedPhysicsEngine` built from ``cfg``.
         中文：自定义物理引擎；默认按 cfg 构建 SimulatedPhysicsEngine。
+    L : float, optional
+        Per-sample propagation distance. If None, drawn from ``compute_L(seed, cfg.physical)``.
+        中文：每样本传播距离。None 时从 compute_L 按 seed 抽取。
 
     Returns
     -------
@@ -1306,11 +1568,15 @@ def simulate_sample_fom(
         中文：像质因子 FOM（公式 8）。
     """
     engine = _resolve_engine(engine, shared, cfg)
+    if L is None:
+        L = compute_L(seed, cfg.physical)
+    shared_base = _get_shared(cfg)
+    state = make_state(cfg, shared_base, L)
+    engine.set_state(state)
     screens = engine.make_screens(seed)
     phi_conj, _ = engine.beacon_phase_conj(seed, screens)
     phi_track, _ = engine.track(phi_conj)
-    # 总相位 = 聚焦 + 跟踪 + 预测系数重构相位
-    phi_total = engine.phi_focus + phi_track + engine.zernike_to_phase(coeffs)
+    phi_total = state.phi_focus + phi_track + engine.zernike_to_phase(coeffs)
     return engine.forward_fom(screens, phi_total)
 
 
@@ -1388,13 +1654,13 @@ def _worker_init(
 def _worker_generate(batch: list[tuple[int, int]]) -> list[tuple]:
     """Process a batch of ``(sample_index, seed)`` pairs.
 
-    Returns a list of compact tuples ``(idx, images_raw, labels, fom_noao,
+    Returns a list of compact tuples ``(idx, L, images_raw, labels, fom_noao,
     fom_track, fom_beacon, fom_z78)`` (the large phase arrays are not shipped
-    back to the parent).
+    back to the parent). ``L`` is the per-sample propagation distance.
 
     中文：处理一批 (sample_index, seed) 对。返回紧凑元组列表
-    (idx, images_raw, labels, fom_noao, fom_track, fom_beacon, fom_z78)
-    —— 大相位数组不回传父进程（只回传图像/标签/FOM，省 IPC 开销）。
+    (idx, L, images_raw, labels, fom_noao, fom_track, fom_beacon, fom_z78)
+    —— 大相位数组不回传父进程（只回传图像/标签/FOM/逐样本 L，省 IPC 开销）。
     参数 batch: [(sample_index, seed), ...] 列表。
     """
     out = []
@@ -1409,6 +1675,7 @@ def _worker_generate(batch: list[tuple[int, int]]) -> list[tuple]:
         out.append(
             (
                 idx,
+                s.L,
                 s.images,
                 s.labels,
                 s.fom_noao,
@@ -1489,7 +1756,6 @@ def generate_dataset(
     master_seed = int(d.master_seed)  # 主种子（样本种子 = master_seed + 索引）
     workers = int(d.workers)  # 多进程 worker 数
     h5_path = d.h5_path  # HDF5 输出路径
-    L = float(p.L)  # 传播距离 [m]
 
     # A hardware measurement source cannot be shared across fork'd processes
     # (a physical device / file stream is single-consumer), so force workers=1.
@@ -1597,6 +1863,7 @@ def generate_dataset(
                 ):
                     for (
                         idx,
+                        sample_L,
                         images_raw,
                         labels,
                         fom_noao,
@@ -1610,6 +1877,7 @@ def generate_dataset(
                         f["fom_track"][idx] = fom_track
                         f["fom_beacon"][idx] = fom_beacon
                         f["fom_z78"][idx] = fom_z78
+                        f["L"][idx] = sample_L
                         # Train-only stats (Eqs 13-14): idx < n_train identifies
                         # the train split here (train_idx = arange(n_train)).
                         # 中文：仅训练子集累计统计量（公式 13-14）。
@@ -1632,8 +1900,8 @@ def generate_dataset(
                 )  # 逐平面 raw 最大值（schema 兼容）
 
                 # Metadata（一次性写满的标量/向量元数据）。
+                # 注：L 为逐样本量，已在主循环内逐行写入 f["L"][idx]。
                 f["seeds"][:] = master_seed + all_idx
-                f["L"][:] = L
                 f["train_idx"][:] = train_idx
                 f["test_idx"][:] = test_idx
                 f["eval_idx"][:] = eval_idx
