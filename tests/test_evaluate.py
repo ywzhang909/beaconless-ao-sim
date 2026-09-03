@@ -34,8 +34,8 @@ def _make_tiny_h5(path, n=32, n_modes=78, N=32):
 
     Schema (pinned): /images (N_total,3,N,N) uint16, /labels (N_total,78)
     float32 RAW radians, /fom_noao /fom_track /fom_beacon /fom_z78 (N_total,)
-    float32, /seeds (N_total,) int64, /train_idx /test_idx /eval_idx,
-    /mu /sigma (78,) float32 (TRAIN-split), /scale_p (3,),
+    float32, /seeds (N_total,) int64, /L (N_total,) float32, /train_idx
+    /test_idx /eval_idx, /mu /sigma (78,) float32 (TRAIN-split), /scale_p (3,),
     /vacuum_intensity (N,N), attr config_json.
     """
     rng = np.random.default_rng(0)
@@ -54,6 +54,9 @@ def _make_tiny_h5(path, n=32, n_modes=78, N=32):
         f.create_dataset("fom_beacon", data=foms)
         f.create_dataset("fom_z78", data=foms)
         f.create_dataset("seeds", data=(np.arange(n) + 1000).astype(np.int64))
+        f.create_dataset(
+            "L", data=rng.uniform(1000.0, 2600.0, n).astype(np.float32)
+        )
         f.create_dataset("train_idx", data=np.arange(0, n // 2, dtype=np.int64))
         f.create_dataset(
             "test_idx", data=np.arange(n // 2, 3 * n // 4, dtype=np.int64)

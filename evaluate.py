@@ -180,6 +180,7 @@ def load_h5(cfg: SimConfig) -> dict:
             "fom_beacon": f["fom_beacon"][:],
             "fom_z78": f["fom_z78"][:],
             "seeds": f["seeds"][:],
+            "L": (f["L"][:] if "L" in f else None),
             "train_idx": f["train_idx"][:],
             "test_idx": f["test_idx"][:],
             "eval_idx": f["eval_idx"][:],
@@ -198,6 +199,7 @@ def predict(
     sigma: np.ndarray,
     device: torch.device,
     batch_size: int = 32,
+    length: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Batch inference on the eval subset, returning denormalized coefficients.
 
@@ -206,17 +208,30 @@ def predict(
     denormalized with the TRAIN-split statistics (inverse of Eq 14):
 
     ``c_pred = y_pred * sigma + mu``.
+
+    ``length`` (optional, shape ``(n_eval,)``) is the per-sample propagation
+    distance in metres; it is normalized to ``[1.0, 2.6]`` (``/ 1000``) and fed
+    to the CNNL length head when the model has one.
     """
     model.eval()
     n_eval = len(eval_idx)
     n_modes = int(model.n_modes)
+    is_cnnl = hasattr(getattr(model, "module", model), "length_head")
     c_pred = np.zeros((n_eval, n_modes), dtype=np.float32)
     with torch.no_grad():
         for i in range(0, n_eval, batch_size):
             idx = eval_idx[i : i + batch_size]
             batch = images[idx].astype(np.float32) / 2047.0
             batch_t = torch.from_numpy(batch).to(device)
-            out = model(batch_t).cpu().numpy()
+            if is_cnnl:
+                # length is pre-subset (aligned to eval positions 0..n_eval),
+                # so index by local slice i:i+batch, NOT by absolute idx.
+                length_t = torch.from_numpy(
+                    length[i : i + batch_size].astype(np.float32) / 1000.0
+                ).to(device)
+                out = model(batch_t, length_t).cpu().numpy()
+            else:
+                out = model(batch_t).cpu().numpy()
             c_pred[i : i + batch_size] = out
     c_pred = c_pred * sigma + mu
     return c_pred
@@ -486,11 +501,13 @@ def _try_get_sim_images(
     """Best-effort retrieval of object-plane images from data.simulate.
 
     Uses the public ``simulate_sample(seed, cfg, correction_coeffs=coeffs)``
-    API to obtain ``I_obj_track`` and ``I_vac``. ``I_obj_ml`` (the ML-corrected
-    object-plane intensity) is not exposed by ``SimSample``, so it is computed
-    by re-propagating the ML beam phase through the shared state; on any failure
-    it falls back to ``I_obj_track``. Returns ``None`` when the simulation
-    module is unavailable.
+    API to obtain the per-sample (per-L) remote-plane intensities:
+    ``I_obj_track`` (tracking-only), ``I_obj_ml`` (tracking + CNN-predicted
+    Zernike correction — the ML-corrected remote light field) and ``I_vac``
+    (vacuum reference). ``I_obj_ml`` is computed inside ``simulate_sample`` on
+    the per-sample state (CNNL), so it is correct for every per-sample ``L``;
+    on any failure it falls back to ``I_obj_track``. Returns ``None`` when the
+    simulation module is unavailable.
     """
     try:
         from data.simulate import simulate_sample
@@ -502,36 +519,14 @@ def _try_get_sim_images(
         )
     except Exception:
         return None
-    out = {
+    i_ml = getattr(sample, "I_obj_ml", None)
+    if i_ml is None:
+        i_ml = np.asarray(sample.I_obj_track)
+    return {
         "I_obj_track": np.asarray(sample.I_obj_track),
+        "I_obj_ml": np.asarray(i_ml),
         "I_vac": np.asarray(sample.I_vac),
     }
-    try:
-        from data.simulate import (
-            _beacon_phase_conj,
-            _get_shared,
-            _make_screens,
-            _tracking,
-        )
-
-        shared = _get_shared(cfg)
-        screens = _make_screens(int(seed), cfg, shared)
-        phi_conj, _ = _beacon_phase_conj(int(seed), cfg, shared, screens)
-        phi_track, _ = _tracking(shared, phi_conj)
-        phi_ml = (
-            shared.phi_focus
-            + phi_track
-            + shared.zern.zernike_to_phase(coeffs)
-        )
-        E_obj = shared.prop.split_step(
-            (shared.E0 * np.exp(1j * phi_ml)).astype(np.complex64),
-            screens,
-            shared.dz,
-        )
-        out["I_obj_ml"] = (np.abs(E_obj) ** 2).astype(np.float32)
-    except Exception:
-        out["I_obj_ml"] = np.asarray(sample.I_obj_track)
-    return out
 
 
 def plot_samples(
@@ -603,18 +598,115 @@ def plot_samples(
 # --------------------------------------------------------------------------- #
 # WandB
 # --------------------------------------------------------------------------- #
+def _intensity_to_rgb(arr: np.ndarray) -> np.ndarray:
+    """Map an intensity field to an 8-bit uint8 RGB image for WandB.
+
+    The intensity is normalised to ``[0, 1]`` via min-max, then mapped through
+    the ``magma`` colormap (a perceptually smooth grayscale-to-hot ramp) so the
+    remote light field is easy to read in the WandB UI. Returns a
+    ``(H, W, 3)`` uint8 array.
+    """
+    import matplotlib as mpl
+
+    a = np.asarray(arr, dtype=np.float64)
+    lo, hi = float(a.min()), float(a.max())
+    if hi > lo:
+        a = (a - lo) / (hi - lo)
+    else:
+        a = np.zeros_like(a)
+    cm = mpl.colormaps["magma"]
+    rgb = (cm(a)[:, :, :3] * 255.0).round().astype(np.uint8)
+    return rgb
+
+
+def _remote_field_panel(
+    seed: int,
+    cfg: SimConfig,
+    coeffs: np.ndarray,
+    fom_track: float,
+    fom_ml: float,
+) -> np.ndarray:
+    """Build a 2x2 remote light-field comparison image for one eval sample.
+
+    Tiles the per-sample (per-L) remote/object-plane intensities for four
+    correction legs: ``noao`` (focus only), ``track`` (tracking only),
+    ``vacuum`` (no-turbulence reference) and ``I_obj_ml`` (tracking + CNN
+    predicted Zernike correction — the ML-corrected remote light field the
+    laser actually illuminates). ``I_obj_ml`` is computed inside
+    ``simulate_sample`` on the per-sample state, so it is correct for every
+    per-sample L (CNNL). Returns an ``(2N+3, 2N+3, 3)`` uint8 RGB image.
+    """
+    from data.simulate import (
+        _get_shared,
+        _make_screens,
+        _object_plane_intensity,
+        make_state,
+        simulate_sample,
+    )
+
+    sample = simulate_sample(
+        seed=int(seed), cfg=cfg, correction_coeffs=coeffs
+    )
+    # Rebuild the per-L state + screens to render the noao/track legs on the
+    # same L (simulate_sample stores only I_obj_ml / I_obj_track / I_vac).
+    shared = _get_shared(cfg)
+    L_eff = float(getattr(sample, "L", None) or 0.0)
+    state = make_state(cfg, shared, L_eff)
+    screens = _make_screens(int(seed), cfg, state)
+    phi_focus = state.phi_focus
+    phi_track = sample.phase_track
+
+    I_noao = _object_plane_intensity(state, screens, phi_focus)
+    I_track = _object_plane_intensity(state, screens, phi_focus + phi_track)
+    I_vac = np.asarray(sample.I_vac)
+    I_ml = (
+        np.asarray(sample.I_obj_ml)
+        if sample.I_obj_ml is not None
+        else np.asarray(sample.I_obj_track)
+    )
+
+    panels = [I_noao, I_track, I_vac, I_ml]
+    labels = ["noao (focus)", "track", "vacuum (ref)", "ML-corrected (CNN Zernike)"]
+    caption = (
+        f"L={L_eff:.0f}m | FOM: noao/track={fom_track:.3f} | "
+        f"ML-corrected={fom_ml:.3f}"
+    )
+    # Tile 2x2 with the magma colormap for readability.
+    import matplotlib as mpl
+
+    N = state.N
+    grid = np.zeros((2 * N + 3, 2 * N + 3, 3), dtype=np.uint8)
+    cm = mpl.colormaps["magma"]
+    offsets = [(0, 0), (0, N + 2), (N + 2, 0), (N + 2, N + 2)]
+    for p, (y0, x0) in enumerate(offsets):
+        a = np.asarray(panels[p], dtype=np.float64)
+        lo, hi = float(a.min()), float(a.max())
+        a = (a - lo) / (hi - lo) if hi > lo else np.zeros_like(a)
+        grid[y0 : y0 + N, x0 : x0 + N] = (cm(a)[:, :, :3] * 255).round().astype(
+            np.uint8
+        )
+    return grid, caption
+
+
 def log_to_wandb(
     cfg: SimConfig,
     metrics: dict,
     figs: dict,
     results_path: str,
     no_wandb: bool,
+    remote_panels: list | None = None,
 ) -> None:
-    """Log metrics, figures and the results artifact to WandB (never raises).
+    """Log metrics, figures, the results artifact and remote light-field panels.
 
     Uses utils.wandb_utils (init_wandb / log_metrics / log_figure /
     finish_wandb). ``--no-wandb`` disables logging entirely; ``WANDB_MODE``
     environment variables (e.g. ``disabled``) are honoured by wandb itself.
+
+    ``remote_panels``: per-eval-sample remote light-field comparison images,
+    each a ``(image, caption)`` tuple (noao / track / vacuum / ML-corrected).
+    When provided, each panel is logged as a ``wandb.Image`` under
+    ``remote_field/sample_i`` so the CNN-corrected remote light field is visible
+    in the WandB UI.
     """
     if no_wandb:
         return
@@ -638,6 +730,20 @@ def log_to_wandb(
     )
     for name, fig in figs.items():
         log_figure(run, fig, name)
+    # Upload the ML-corrected remote light-field panels (the key visualization).
+    if remote_panels:
+        import wandb
+
+        for i, item in enumerate(remote_panels):
+            if item is None:
+                continue
+            panel, caption = item if isinstance(item, tuple) else (item, "")
+            try:
+                run.log(
+                    {f"remote_field/sample_{i}": wandb.Image(panel, caption=caption)}
+                )
+            except Exception:
+                pass
     try:
         import wandb
 
@@ -698,6 +804,10 @@ def main(
         eval_idx = eval_idx[: int(limit)]
 
     # Inference + ground truth.
+    is_cnnl = hasattr(getattr(model, "module", model), "length_head")
+    length_arg = None
+    if is_cnnl and data.get("L") is not None:
+        length_arg = np.asarray(data["L"], dtype=np.float32)[eval_idx]
     c_pred = predict(
         model,
         data["images"],
@@ -706,6 +816,7 @@ def main(
         data["sigma"],
         device,
         batch_size=int(cfg.eval.batch_size),
+        length=length_arg,
     )
     c_true = np.asarray(data["labels"], dtype=np.float64)[eval_idx]
 
@@ -744,8 +855,35 @@ def main(
         data["images"][eval_idx[plot_idx]], sim_images, out_dir
     )
 
+    # WandB: upload the ML-corrected remote light-field panels for a
+    # representative subset of eval samples (the key visualization of the
+    # CNN-predicted Zernike correction applied to the remote plane).
+    remote_panels = None
+    if fom_ml is not None and not no_wandb:
+        remote_panels = []
+        n_remote = min(4, len(eval_idx))
+        remote_idx = np.linspace(0, len(eval_idx) - 1, n_remote).astype(int)
+        for i in remote_idx:
+            si = int(eval_idx[i])
+            try:
+                panel = _remote_field_panel(
+                    seed=int(data["seeds"][si]),
+                    cfg=cfg,
+                    coeffs=c_pred[i],
+                    fom_track=float(np.asarray(foms["fom_track"][i])),
+                    fom_ml=float(np.asarray(fom_ml)[i]),
+                )
+                remote_panels.append(panel)
+                print(f"[remote_field] sample {si} OK", flush=True)
+            except Exception as _e:
+                import traceback
+
+                print(f"[remote_field] sample {si} FAILED: {repr(_e)}", flush=True)
+                traceback.print_exc()
+                remote_panels.append(None)
+
     # WandB.
-    log_to_wandb(cfg, metrics, figs, results_path, no_wandb)
+    log_to_wandb(cfg, metrics, figs, results_path, no_wandb, remote_panels)
 
     # Report.
     print_report(metrics, len(eval_idx))
