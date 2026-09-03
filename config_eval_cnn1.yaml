@@ -102,18 +102,18 @@ train:
   beta1: 0.9
   beta2: 0.999
   batch_size: 32            # effective batch (paper Table 1) = micro_batch x grad_accum
-  micro_batch_size: 8       # VRAM-limited per-step batch; accumulation restores 32
-  n_steps: 3000             # [DEMO] paper CNN1: 11,500 ; CNNL: 35,000 (Table 1/Fig 7)
+  micro_batch_size: 2       # VRAM-limited per-step batch (small free VRAM); accumulation restores 32
+  n_steps: 800              # [DEMO MEDIUM 200 train] balanced for small data
   loss: "mse"
   seed: 0
   amp: true                # FP16 autocast + grad scaler (RTX 4090 class GPU)
   mixed_precision: true
-  sim_eval_every: 500      # every N steps, FOM-evaluate the current batch in sim (Sec 2.6:
-                           #   "every 100 batches, predicted phase evaluated in simulation" -> 100 for paper)
+  sim_eval_every: 100000   # DISABLED: in-training OOPAO sim eval spawns GPU workers that OOM with tight VRAM; evaluate separately via evaluate.py
   sim_eval_n: 8            # number of eval samples used per in-training FOM evaluation
-  ckpt_dir: "checkpoints"
+  ckpt_dir: "checkpoints/cnn1"
   log_every: 10            # wandb scalar logging interval
   grad_clip: null
+  num_workers: 0           # 0 => load in main process (avoids per-worker GPU context OOM with tight VRAM)
 
 # --- Evaluation protocol (Sec 2.7) ---
 eval:
@@ -125,6 +125,6 @@ eval:
 wandb:
   project: "beaconless-ao-sim"
   entity: "ywzhang909"
-  run_name: null           # null => auto-generated
-  tags: ["cnn1", "demo"]
-  notes: "Demo-scale reproduction of Opt. Express 33(15):31010 (2025) CNN1."
+  run_name: "cnn1_medium"   # null => auto-generated
+  tags: ["cnn1", "medium-200"]
+  notes: "CNN1 baseline on 200-train corrected per-L dataset."
