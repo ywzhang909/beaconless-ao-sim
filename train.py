@@ -50,6 +50,15 @@ H5_CACHE_NSLOTS = 1_000_000
 # 12-bit camera quantization: uint16 intensities live in [0, 2047].
 IMAGE_MAX = 2047.0
 
+# Normalization divisor for the CNNL length head: raw metres / 1000 -> range [1.0, 2.6].
+_LENGTH_NORM = 1000.0
+
+
+def _is_cnnl(model: torch.nn.Module) -> bool:
+    """Return ``True`` if *model* (or its DDP wrapper) is a CNNL."""
+    m = getattr(model, "module", model)
+    return hasattr(m, "length_head")
+
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -104,6 +113,7 @@ class BeaconlessH5Dataset(torch.utils.data.Dataset):
     - ``/train_idx``, ``/test_idx``, ``/eval_idx`` int64 index arrays.
     - ``/mu``, ``/sigma`` ``(78,)`` float32 computed over the TRAIN split.
     - ``/scale_p`` ``(3,)`` float32; ``/vacuum_intensity`` ``(N, N)`` float32.
+    - ``/L`` ``(N_total,)`` float32 per-sample propagation distance in metres.
     - attribute ``config_json``.
 
     Sample ``i`` returns a dict:
@@ -111,6 +121,7 @@ class BeaconlessH5Dataset(torch.utils.data.Dataset):
     - ``target``: ``(78,)`` float32 ``= (labels - mu) / sigma`` (Eq 14).
     - ``seed``: int64 scalar (raw turbulence seed, needed for sim eval).
     - ``labels_raw``: ``(78,)`` float32 raw radians (needed for sim eval).
+    - ``L``: ``()`` float32 scalar propagation distance in metres (CNNL only).
 
     The HDF5 handle is opened lazily per process so the dataset pickles cleanly
     to DataLoader workers (each worker gets its own handle + chunk cache).
@@ -147,11 +158,18 @@ class BeaconlessH5Dataset(torch.utils.data.Dataset):
         labels_raw = f["/labels"][idx].astype(np.float32)
         target = (labels_raw - self.mu) / self._sigma_safe
         seed = int(f["/seeds"][idx])
+        # Per-sample propagation distance in metres (CNNL model only).
+        # Falls back to a dummy 1000 m scalar when /L is absent (CNN1 datasets).
+        if "/L" in f:
+            length = f["/L"][idx].astype(np.float32)
+        else:
+            length = np.float32(1000.0)
         return {
             "images": torch.from_numpy(images),
             "target": torch.from_numpy(target),
             "seed": torch.as_tensor(seed, dtype=torch.int64),
             "labels_raw": torch.from_numpy(labels_raw),
+            "L": torch.as_tensor(length, dtype=torch.float32),
         }
 
 
@@ -429,7 +447,9 @@ def evaluate_sim_fom(
         fom_z78 = f["/fom_z78"][eval_idx].astype(np.float64)
         images = f["/images"][eval_idx].astype(np.float32) / IMAGE_MAX
         labels_raw = f["/labels"][eval_idx].astype(np.float32)
+        L_eval = f["/L"][eval_idx].astype(np.float32) if "/L" in f else None
 
+    is_cnnl = _is_cnnl(model)
     # Predict denormalized coefficients for each eval sample.
     model.eval()
     coeffs_list: list[np.ndarray] = []
@@ -437,7 +457,13 @@ def evaluate_sim_fom(
         for i in range(len(eval_idx)):
             img = torch.from_numpy(images[i]).unsqueeze(0).to(device)
             with torch.autocast("cuda", enabled=amp):
-                y_pred = model(img)
+                if is_cnnl:
+                    length_i = torch.as_tensor(
+                        L_eval[i] / _LENGTH_NORM, dtype=torch.float32, device=device
+                    ).unsqueeze(0)
+                    y_pred = model(img, length_i)
+                else:
+                    y_pred = model(img)
             y_pred = y_pred.float().cpu().numpy()[0]
             c_pred = y_pred * sigma + mu
             coeffs_list.append(c_pred.astype(np.float64))
@@ -634,6 +660,7 @@ def train(cfg: SimConfig) -> dict[str, Any]:
 
             images = batch["images"].to(device, non_blocking=True)
             target = batch["target"].to(device, non_blocking=True)
+            length = batch["L"].to(device, non_blocking=True) / _LENGTH_NORM
             if t.channels_last and device.type == "cuda":
                 images = images.to(memory_format=torch.channels_last)
 
@@ -642,7 +669,7 @@ def train(cfg: SimConfig) -> dict[str, Any]:
             # batch (paper batch 32), independent of the VRAM-limited
             # micro-batch size.
             with torch.autocast("cuda", enabled=amp):
-                pred = model(images)
+                pred = model(images, length) if _is_cnnl(model) else model(images)
                 mse = F.mse_loss(pred, target)
             scaler.scale(mse / grad_accum).backward()
 

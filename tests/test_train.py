@@ -48,6 +48,7 @@ def tiny_h5(tmp_path):
     - /labels (64, 78) float32 raw radians
     - /fom_track, /fom_z78 (64,) float32
     - /seeds (64,) int64
+    - /L (64,) float32 per-sample propagation distance in metres
     - /train_idx, /test_idx, /eval_idx int64
     - /mu (78,) zeros, /sigma (78,) ones  (normalization is identity)
     - /scale_p (3,) float32, /vacuum_intensity (32, 32) float32
@@ -71,6 +72,9 @@ def tiny_h5(tmp_path):
             "/fom_z78", data=rng.random(n_total).astype(np.float32)
         )
         f.create_dataset("/seeds", data=np.arange(n_total, dtype=np.int64))
+        f.create_dataset(
+            "/L", data=rng.uniform(1000.0, 2600.0, n_total).astype(np.float32)
+        )
         f.create_dataset("/train_idx", data=np.arange(n_total, dtype=np.int64))
         f.create_dataset("/test_idx", data=np.arange(n_total, dtype=np.int64))
         f.create_dataset("/eval_idx", data=np.arange(n_total, dtype=np.int64))
