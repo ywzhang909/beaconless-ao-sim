@@ -38,6 +38,7 @@ produces independent screens.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import multiprocessing
 import os
@@ -46,8 +47,8 @@ from typing import Any, Optional
 
 import h5py
 import numpy as np
-from numba import njit
 from aotools.turbulence.phasescreen import ft_sh_phase_screen
+from numba import njit
 from tqdm import tqdm
 
 from physics.config import SimConfig
@@ -64,16 +65,16 @@ from physics.zernike_aotools import ZernikeBasis
 from utils.metrics import FOM, bucket_mask
 
 __all__ = [
-    "SimSample",
     "SharedSim",
-    "SimulatedPhysicsEngine",
+    "SimSample",
     "SimulatedMeasurementSource",
+    "SimulatedPhysicsEngine",
+    "bucket_mask_nd",
+    "generate_dataset",
     "physics_from_cfg",
     "simulate_sample",
     "simulate_sample_fom",
     "vacuum_intensity",
-    "bucket_mask_nd",
-    "generate_dataset",
 ]
 
 N_MODES = 78  # Zernike truncation J = 78 (Table 1)
@@ -135,7 +136,7 @@ class SharedSim:
     # (3,) 三个测量平面距物镜的距离 [m]（f_obj - zR, f_obj, f_obj + zR）
     plane_offsets: np.ndarray  # (3,) distances behind objective lens [m]
     # OOPAO 屏幕后端；仅当 beam_source == "oopao" 时设置
-    oopao: Optional[OopaoScreenBackend] = None  # set when beam_source == "oopao"
+    oopao: OopaoScreenBackend | None = None  # set when beam_source == "oopao"
 
 
 _shared_cache: dict[tuple, SharedSim] = {}
@@ -823,10 +824,10 @@ def _imaging(
     # dx' = lam*f_obj/(N_pad_ref*dx) is fixed; each plane uses its own
     # N_pad(z) = lam*z/(dx'*dx) so every output pixel maps to the same
     # physical size (computePSF spirit: pixel_scale = lam/(zeroPadding*D)).
-    N_pad_ref = 8 * N                  # 参考零填充（焦平面 plane 1）
-    DX_PLANE = lam * f_obj / (N_pad_ref * dx)      # ~0.428 mm/px, ALL planes
-    plane_offsets = shared.plane_offsets   # [f_obj-zR_APWS, f_obj, f_obj+zR_APWS]
-    N_pad_planes = [int(round(lam * z / (DX_PLANE * dx))) for z in plane_offsets]
+    N_pad_ref = 8 * N  # 参考零填充（焦平面 plane 1）
+    DX_PLANE = lam * f_obj / (N_pad_ref * dx)  # ~0.428 mm/px, ALL planes
+    plane_offsets = shared.plane_offsets  # [f_obj-zR_APWS, f_obj, f_obj+zR_APWS]
+    N_pad_planes = [round(lam * z / (DX_PLANE * dx)) for z in plane_offsets]
 
     for j in range(n_roughness):
         # Roughness realization (deterministic given seed).
@@ -870,7 +871,7 @@ def _imaging(
             n_pad = N_pad_planes[p]
             E_z = prop.fresnel_padded(E_l, z, n_pad)
             c = (n_pad - N) // 2
-            images[p] += (np.abs(E_z[c:c + N, c:c + N]) ** 2).astype(np.float32)
+            images[p] += (np.abs(E_z[c : c + N, c : c + N]) ** 2).astype(np.float32)
 
     images /= n_roughness
     return images, I_obj_track
@@ -893,7 +894,7 @@ class SimulatedPhysicsEngine(PhysicsEngine):
     委托给现有的 _make_screens / _beacon_phase_conj / _tracking / _fom_leg。
     """
 
-    def __init__(self, cfg: SimConfig, shared: Optional[SharedSim] = None) -> None:
+    def __init__(self, cfg: SimConfig, shared: SharedSim | None = None) -> None:
         self.cfg = cfg
         # Resolve None / SharedSim / physics_from_cfg-tuple to a SharedSim.
         self._shared = _resolve_shared(shared, cfg)
@@ -1030,7 +1031,7 @@ class SimulatedMeasurementSource(MeasurementSource):
         sample_index: int,
         screens: np.ndarray,
         phi_track: np.ndarray,
-    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    ) -> tuple[np.ndarray, np.ndarray | None]:
         # The simulated source forms images from the physics state; the shared
         # state is reachable from the wrapped engine's cfg-consistent SharedSim.
         shared = self._engine._shared  # type: ignore[attr-defined]
@@ -1039,7 +1040,7 @@ class SimulatedMeasurementSource(MeasurementSource):
 
 
 def _resolve_engine(
-    engine: Optional[PhysicsEngine],
+    engine: PhysicsEngine | None,
     shared: Any,
     cfg: SimConfig,
 ) -> PhysicsEngine:
@@ -1113,7 +1114,7 @@ class SimSample:
     fom_track: float
     fom_beacon: float
     fom_z78: float
-    fom_ml: Optional[float]
+    fom_ml: float | None
     I_vac: np.ndarray
     I_obj_track: np.ndarray
     track_slopes: np.ndarray
@@ -1127,11 +1128,11 @@ class SimSample:
 def simulate_sample(
     seed: int,
     cfg: SimConfig,
-    correction_coeffs: Optional[np.ndarray] = None,
+    correction_coeffs: np.ndarray | None = None,
     *,
-    engine: Optional[PhysicsEngine] = None,
-    measurement: Optional[MeasurementSource] = None,
-    shared: Optional[SharedSim] = None,
+    engine: PhysicsEngine | None = None,
+    measurement: MeasurementSource | None = None,
+    shared: SharedSim | None = None,
 ) -> SimSample:
     """Simulate one sample deterministically given ``seed`` (Algorithm 1).
 
@@ -1177,7 +1178,6 @@ def simulate_sample(
         if measurement is not None
         else SimulatedMeasurementSource(engine, cfg)
     )
-    zern = engine.zern
 
     # Step A: turbulence phase screens.
     # 中文：A. 湍流相位屏（n_screens 层，由 seed 决定）。
@@ -1185,7 +1185,6 @@ def simulate_sample(
 
     # Step B: aperture beam + focusing phase (precomputed in engine).
     # 中文：B. 入瞳光束 + 聚焦相位（已在 engine 预计算）。
-    E0 = engine.E0
     phi_focus = engine.phi_focus
 
     # Step C: vacuum intensity (precomputed in engine).
@@ -1227,7 +1226,7 @@ def simulate_sample(
         "z78": phi_focus + phi_track + phi_z78,
     }
     # ML 分支（可选）：用预测的 Zernike 系数做校正，计算其 FOM
-    fom_ml: Optional[float] = None
+    fom_ml: float | None = None
     if correction_coeffs is not None:
         phi_ml = phi_focus + phi_track + engine.zernike_to_phase(correction_coeffs)
         fom_ml = engine.forward_fom(screens, phi_ml)
@@ -1268,8 +1267,8 @@ def simulate_sample_fom(
     cfg: SimConfig,
     coeffs: np.ndarray,
     *,
-    engine: Optional[PhysicsEngine] = None,
-    shared: Optional[SharedSim] = None,
+    engine: PhysicsEngine | None = None,
+    shared: SharedSim | None = None,
 ) -> float:
     """Fast path: FOM of a beam propagated with ``phi_focus + phi_track + zernike_to_phase(coeffs)``.
 
@@ -1355,16 +1354,16 @@ def _quantize(images_raw: np.ndarray, scale_p: np.ndarray) -> np.ndarray:
 
 # Worker globals (set in the parent before fork, inherited COW by workers).
 # 中文：worker 进程全局变量（父进程在 fork 前设置，worker 经 COW 继承）。
-_WORKER_CFG: Optional[dict] = None
-_WORKER_SHARED: Optional[SharedSim] = None
-_WORKER_ENGINE: Optional[PhysicsEngine] = None
-_WORKER_MEASUREMENT: Optional[MeasurementSource] = None
+_WORKER_CFG: dict | None = None
+_WORKER_SHARED: SharedSim | None = None
+_WORKER_ENGINE: PhysicsEngine | None = None
+_WORKER_MEASUREMENT: MeasurementSource | None = None
 
 
 def _worker_init(
     cfg: SimConfig,
-    engine: Optional[PhysicsEngine] = None,
-    measurement: Optional[MeasurementSource] = None,
+    engine: PhysicsEngine | None = None,
+    measurement: MeasurementSource | None = None,
 ) -> None:
     """Pool initializer: cache cfg + shared state once per worker process.
 
@@ -1444,8 +1443,8 @@ def _make_batches(
 def generate_dataset(
     cfg: SimConfig,
     *,
-    engine: Optional[PhysicsEngine] = None,
-    measurement: Optional[MeasurementSource] = None,
+    engine: PhysicsEngine | None = None,
+    measurement: MeasurementSource | None = None,
 ) -> str:
     """Run the single-pass dataset generation pipeline and write the HDF5 file.
 
@@ -1531,19 +1530,32 @@ def generate_dataset(
     _prev_engine, _prev_measurement = _WORKER_ENGINE, _WORKER_MEASUREMENT
     _WORKER_ENGINE, _WORKER_MEASUREMENT = engine, measurement
     try:
-        # POSIX: fork 上下文 —— 子进程通过 COW 继承父进程已构建的 shared 与
-        # 注入的 engine/measurement（零拷贝）；Windows: 无 fork，回退 spawn，
-        # engine/measurement 经 initargs 一次性 pickled 给每个 worker。
-        # English: POSIX uses fork (COW zero-copy inheritance of shared state
-        # and the injected engine/measurement); Windows has no fork, so spawn
-        # is used and engine/measurement are passed via initargs.
-        _ctx_names = multiprocessing.get_all_start_methods()
-        ctx_name = "fork" if "fork" in _ctx_names else "spawn"
-        ctx = multiprocessing.get_context(ctx_name)
-        initargs: tuple = (cfg,)
-        if ctx_name == "spawn":
-            initargs = (cfg, engine, measurement)
-        with ctx.Pool(n_workers, initializer=_worker_init, initargs=initargs) as pool:
+        # In-process fast path (workers == 1): skip Pool entirely. The
+        # OOPAO Telescope/Source carry C-level state that is not picklable,
+        # so passing them through a spawn-based Pool (Windows) breaks even
+        # for a single worker. Calling _worker_generate directly reuses the
+        # already-built shared state without any pickling.
+        # 中文：workers == 1 时跳过 Pool。OOPAO Telescope/Source 含 C 级状态，
+        # 不可 pickle；即便 Windows spawn 下 worker 数 = 1 也无法 pickle，
+        # 因此直接调用 _worker_generate（已构建的 shared 原地复用，零拷贝）。
+        if n_workers == 1:
+            _worker_init(cfg, engine, measurement)
+            _pool_ctx: Any = contextlib.nullcontext()
+        else:
+            # POSIX: fork 上下文 —— 子进程通过 COW 继承父进程已构建的 shared 与
+            # 注入的 engine/measurement（零拷贝）；Windows: 无 fork，回退 spawn，
+            # engine/measurement 经 initargs 一次性 pickled 给每个 worker。
+            # English: POSIX uses fork (COW zero-copy inheritance of shared state
+            # and the injected engine/measurement); Windows has no fork, so spawn
+            # is used and engine/measurement are passed via initargs.
+            _ctx_names = multiprocessing.get_all_start_methods()
+            ctx_name = "fork" if "fork" in _ctx_names else "spawn"
+            ctx = multiprocessing.get_context(ctx_name)
+            initargs: tuple = (cfg,)
+            if ctx_name == "spawn":
+                initargs = (cfg, engine, measurement)
+            _pool_ctx = ctx.Pool(n_workers, initializer=_worker_init, initargs=initargs)
+        with _pool_ctx as pool:
             # ---- single pass: quantize + stream all samples to HDF5, while
             #      accumulating train-only stats (Eqs 13-14) ----
             # 中文：单趟 —— 量化 + 流式写出全部样本到 HDF5，同时仅用训练子集
@@ -1590,11 +1602,18 @@ def generate_dataset(
                 # 量化用逐图像归一化（_quantize 忽略 scale_p），故 scale_p 可在
                 # 写完后回填；train 子集在写出同时累计统计量。
                 all_batches = _make_batches(all_idx, master_seed, chunk=4)
-                for batch_result in tqdm(
-                    pool.imap_unordered(_worker_generate, all_batches),
-                    total=len(all_batches),
-                    desc="generate (single pass)",
-                ):
+                if pool is None:
+                    _results = (_worker_generate(batch) for batch in all_batches)
+                    _iter = tqdm(
+                        _results, total=len(all_batches), desc="generate (single pass)"
+                    )
+                else:
+                    _iter = tqdm(
+                        pool.imap_unordered(_worker_generate, all_batches),
+                        total=len(all_batches),
+                        desc="generate (single pass)",
+                    )
+                for batch_result in _iter:
                     for (
                         idx,
                         images_raw,

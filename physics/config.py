@@ -14,6 +14,7 @@
 （``run`` 段、``eval.ckpt_path`` 等）也定义为带默认值的字段，保证
 dataclass 与旧 dict 的读写语义一致、可被测试 monkeypatch。
 """
+
 from __future__ import annotations
 
 import os
@@ -83,9 +84,7 @@ class ImagingConfig:
     #   （Eq 9：z_R_APWS = π·r_APWS²/λ；r0 ≈ 0.04 m @ 800nm/L=1km -> ~640 m）。
     f_obj: float | None = None
     # 物镜焦距 [m]：null 时取 f_obj = 2·z_R_APWS（Eq 12，~1280 m）。
-    plane_offset_frac: list = field(
-        default_factory=lambda: [0.0, 1.0, 2.0]
-    )
+    plane_offset_frac: list = field(default_factory=lambda: [0.0, 1.0, 2.0])
     # 测量平面位置（相对物镜的焦距比例）：0=f_obj-z_R, 1=焦面, 2=f_obj+z_R ——
     #   ±z_R 离焦平面是 CNN 提取深度信息的物理载体。
 
@@ -209,6 +208,13 @@ class TrainConfig:
     # 梯度裁剪阈值（None = 不裁剪）。
     num_workers: int = 4
     # DataLoader 工作进程数（运行时默认 4）。
+    persistent_workers: bool = False
+    # DataLoader 是否跨 epoch 保持 worker 进程（减少 spawn 开销；num_workers=0 时无效）。
+    prefetch_factor: int = 4
+    # DataLoader 每个 worker 预取的批数（仅 num_workers>0 时生效）。
+    preload_to_ram: bool = False
+    # 将训练 split 的 images/labels 一次性读入 CPU 内存（消除 h5py I/O；
+    # 适合 smoke test / demo 规模数据集；大 91000 sample 不建议）。
     channels_last: bool = False
     # 是否使用 channels_last 内存布局（运行时默认）。
     compile: bool = False
@@ -324,7 +330,9 @@ class SimConfig:
                     if k not in sec_cls.__dataclass_fields__:
                         continue  # 未知字段：忽略
                     ty = str(sec_cls.__dataclass_fields__[k].type)
-                    if isinstance(v, str) and ("float" in ty or " int" in ty or ty == "int"):
+                    if isinstance(v, str) and (
+                        "float" in ty or " int" in ty or ty == "int"
+                    ):
                         try:
                             v = float(v)
                         except ValueError:

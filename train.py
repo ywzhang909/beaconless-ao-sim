@@ -54,7 +54,9 @@ IMAGE_MAX = 2047.0
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-def attach_run(cfg: SimConfig, *, ckpt_dir: Optional[str] = None, no_wandb: bool = False) -> SimConfig:
+def attach_run(
+    cfg: SimConfig, *, ckpt_dir: Optional[str] = None, no_wandb: bool = False
+) -> SimConfig:
     """Attach run-time paths and DDP/device info to ``cfg`` (mutates and returns it).
 
     Sets ``cfg.run`` fields:
@@ -116,9 +118,16 @@ class BeaconlessH5Dataset(torch.utils.data.Dataset):
     to DataLoader workers (each worker gets its own handle + chunk cache).
     """
 
-    def __init__(self, h5_path: str, split: str = "train") -> None:
+    def __init__(
+        self,
+        h5_path: str,
+        split: str = "train",
+        *,
+        preload: bool = False,
+    ) -> None:
         self.h5_path = h5_path
         self.split = split
+        self.preload = bool(preload)
         self._f: Optional[h5py.File] = None
         with h5py.File(h5_path, "r") as f:
             self.indices = f[f"/{split}_idx"][:].astype(np.int64)
@@ -126,6 +135,20 @@ class BeaconlessH5Dataset(torch.utils.data.Dataset):
             self.sigma = f["/sigma"][:].astype(np.float32)
         # Guard against zero-variance modes (sigma == 0 -> division by zero).
         self._sigma_safe = np.where(self.sigma == 0.0, 1.0, self.sigma)
+        # Optional in-memory preload: read this split's images / labels / seeds
+        # into RAM at init. For small datasets (smoke tests, demo runs) this
+        # removes the h5py per-sample I/O bottleneck and is significantly
+        # faster than the lazy file handle. Memory cost ~ 1.5 MB per sample
+        # (3 * 512 * 512 * uint16) plus 78 * 4 B for labels.
+        self._images: Optional[np.ndarray] = None
+        self._labels: Optional[np.ndarray] = None
+        self._seeds: Optional[np.ndarray] = None
+        if self.preload:
+            with h5py.File(h5_path, "r") as f:
+                idx = self.indices
+                self._images = f["/images"][idx]  # (n, 3, N, N) uint16, no copy
+                self._labels = f["/labels"][idx]  # (n, 78) float32
+                self._seeds = f["/seeds"][idx]  # (n,) int64
 
     def _file(self) -> h5py.File:
         if self._f is None:
@@ -141,12 +164,18 @@ class BeaconlessH5Dataset(torch.utils.data.Dataset):
         return len(self.indices)
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
-        idx = int(self.indices[i])
-        f = self._file()
-        images = f["/images"][idx].astype(np.float32) / IMAGE_MAX
-        labels_raw = f["/labels"][idx].astype(np.float32)
+        if self.preload:
+            assert self._images is not None and self._labels is not None
+            images = self._images[i].astype(np.float32) / IMAGE_MAX
+            labels_raw = self._labels[i].astype(np.float32)
+            seed = int(self._seeds[i]) if self._seeds is not None else 0
+        else:
+            idx = int(self.indices[i])
+            f = self._file()
+            images = f["/images"][idx].astype(np.float32) / IMAGE_MAX
+            labels_raw = f["/labels"][idx].astype(np.float32)
+            seed = int(f["/seeds"][idx])
         target = (labels_raw - self.mu) / self._sigma_safe
-        seed = int(f["/seeds"][idx])
         return {
             "images": torch.from_numpy(images),
             "target": torch.from_numpy(target),
@@ -527,7 +556,9 @@ def train(cfg: SimConfig) -> dict[str, Any]:
     np.random.seed(seed + rank)
 
     # --- Data ---
-    train_ds = BeaconlessH5Dataset(run.h5_path, split="train")
+    train_ds = BeaconlessH5Dataset(
+        run.h5_path, split="train", preload=bool(t.preload_to_ram)
+    )
     sampler = None
     shuffle = True
     if is_dist:
@@ -539,6 +570,9 @@ def train(cfg: SimConfig) -> dict[str, Any]:
             seed=seed + rank,
         )
         shuffle = False
+    num_workers = int(t.num_workers)
+    persistent_workers = bool(t.persistent_workers) and num_workers > 0
+    prefetch_factor = int(t.prefetch_factor) if num_workers > 0 else None
     loader = torch.utils.data.DataLoader(
         train_ds,
         batch_size=micro_batch_size,
@@ -546,7 +580,10 @@ def train(cfg: SimConfig) -> dict[str, Any]:
         sampler=sampler,
         num_workers=num_workers,
         pin_memory=device.type == "cuda",
-        drop_last=False,
+        pin_memory_device="cuda" if device.type == "cuda" else "",
+        drop_last=is_dist,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
         worker_init_fn=_worker_init_fn(seed + rank),
     )
 
@@ -611,14 +648,26 @@ def train(cfg: SimConfig) -> dict[str, Any]:
 
     def _save_last() -> None:
         save_checkpoint(
-            last_path, model, optimizer, scaler, step, cfg,
-            rank=rank, is_distributed=is_dist,
+            last_path,
+            model,
+            optimizer,
+            scaler,
+            step,
+            cfg,
+            rank=rank,
+            is_distributed=is_dist,
         )
 
     def _save_best() -> None:
         save_checkpoint(
-            best_path, model, optimizer, scaler, step, cfg,
-            rank=rank, is_distributed=is_dist,
+            best_path,
+            model,
+            optimizer,
+            scaler,
+            step,
+            cfg,
+            rank=rank,
+            is_distributed=is_dist,
         )
 
     epoch = 0
@@ -756,9 +805,39 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--ckpt-dir", default=None, help="override train.ckpt_dir")
     parser.add_argument("--no-wandb", action="store_true", help="disable wandb")
     parser.add_argument("--resume", default=None, help="checkpoint to resume from")
+    parser.add_argument(
+        "--preload",
+        action="store_true",
+        help="preload the train split into RAM (BeaconlessH5Dataset.preload=True)",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="override train.num_workers",
+    )
+    parser.add_argument(
+        "--persistent-workers",
+        action="store_true",
+        help="override train.persistent_workers=True",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=None,
+        help="override train.prefetch_factor",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    if args.preload:
+        cfg.train.preload_to_ram = True
+    if args.num_workers is not None:
+        cfg.train.num_workers = int(args.num_workers)
+    if args.persistent_workers:
+        cfg.train.persistent_workers = True
+    if args.prefetch_factor is not None:
+        cfg.train.prefetch_factor = int(args.prefetch_factor)
     attach_run(cfg, ckpt_dir=args.ckpt_dir, no_wandb=args.no_wandb)
     if args.resume:
         cfg.run.resume = os.path.abspath(args.resume)

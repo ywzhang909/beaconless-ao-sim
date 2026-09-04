@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.h5
 *.hdf5
+*.log
+*.pt
 runs/
 wandb/
 checkpoints/
@@ -24,3 +26,4 @@ results/*
 # local code intelligence index (regenerated on demand)
 .codegraph/
 uv.lock
+
