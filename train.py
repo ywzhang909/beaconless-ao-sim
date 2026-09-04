@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.cnn import CNN1, CNN1Freq, CNN1Star, CNNL
+from models.cnn import CNN1, CNN1Freq, CNN1FreqInput, CNN1Star, CNNL
 from physics.config import SimConfig, load_config
 from utils import wandb_utils
 from utils.metrics import eta, gain
@@ -214,6 +214,8 @@ def build_model(cfg: SimConfig) -> nn.Module:
             freq_refine_ch=int(m.freq_refine_ch),
         )
         return CNN1Freq(**kwargs, **freq_kwargs)
+    if name == "CNN1FreqInput":
+        return CNN1FreqInput(**kwargs, freq_input_planes=int(m.freq_input_planes))
     if name == "CNN1Star":
         # CNN1Star uses base_dim/depths instead of channels, and its own
         # pool_size default (12), so it gets only the shared MLP kwargs.

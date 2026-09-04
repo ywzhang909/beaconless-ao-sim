@@ -50,7 +50,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from models.cnn import CNN1, CNNL, CNN1Freq, CNN1Star
+from models.cnn import CNN1, CNNL, CNN1Freq, CNN1FreqInput, CNN1Star
 from physics.config import SimConfig, load_config
 from utils.metrics import eta, gain, mode_pearson
 from utils.wandb_utils import (
@@ -129,6 +129,8 @@ def build_model(cfg: SimConfig) -> torch.nn.Module:
             "freq_refine_ch": m.freq_refine_ch,
         }
         return CNN1Freq(**kwargs, **freq_kwargs)
+    if m.name == "CNN1FreqInput":
+        return CNN1FreqInput(**kwargs, freq_input_planes=m.freq_input_planes)
     if m.name == "CNN1Star":
         star_kwargs = {
             "n_modes": m.n_modes,

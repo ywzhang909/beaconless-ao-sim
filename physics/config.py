@@ -163,6 +163,9 @@ class ModelConfig:
     # 2D-FFT 对数幅度网格的自适应池化尺寸。
     freq_refine_ch: int = 16
     # 重组频谱带的 1x1 卷积宽度。
+    # ---- CNN1FreqInput 派生特征输入（仅 name == "CNN1FreqInput" 时生效）----
+    freq_input_planes: int = 3
+    # 额外连接到 CNN 主干的 2D-FFT 对数幅度谱通道数（每平面一个）。
     # ---- CNN1Star 注意力主干（仅 name == "CNN1Star" 时生效）----
     base_dim: int = 32
     # 第一级 StarBlock 阶段的通道宽度。

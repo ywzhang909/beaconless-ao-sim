@@ -18,6 +18,8 @@ Concrete networks provided:
   concatenates a scalar propagation distance into the shared MLP.
 - :class:`CNN1Freq` -- CNN1 augmented with a 2D-FFT log-magnitude spectral
   branch (:class:`FrequencyBranch`).
+- :class:`CNN1FreqInput` -- CNN1 with 2D-FFT log-magnitude spectra concatenated
+  as extra input channels to the CNN backbone (derived-feature input ablation).
 - :class:`CNN1Star` -- StarNet-style feature extractor (:class:`StarBlock`)
   with optional squeeze-and-excitation attention (:class:`SEBlock`).
 """
@@ -435,6 +437,70 @@ class CNN1Freq(BaseBeaconlessCNN):
         freq = self.freq_branch(images)
         x = torch.cat([x, freq], dim=1)
         return self.mlp(x)
+
+
+class CNN1FreqInput(BaseBeaconlessCNN):
+    """CNN1 with 2D-FFT log-magnitude spectra concatenated as extra input channels.
+
+    Unlike :class:`CNN1Freq`, which computes the spectrum in a *separate* branch
+    fused only at the shared MLP head, this variant treats the FFT spectrum as
+    a *derived input feature*: for each of the 3 intensity planes it computes the
+    full 2D-FFT (``fft2``) log-magnitude ``log(1 + |F|)`` and concatenates it as
+    ``freq_input_planes`` additional channels onto the input tensor, producing a
+    ``(B, 3 + freq_input_planes, 512, 512)`` map that is passed directly through
+    the standard 3-stage CNN backbone. The spectral content therefore enters the
+    spatial CNN pathway at the very first convolution, testing whether feeding an
+    engineered frequency feature as an explicit input channel helps the plain CNN1
+    (architecture otherwise identical to CNN1).
+
+    Parameters
+    ----------
+    freq_input_planes : int, optional
+        Number of extra FFT-spectrum channels prepended to the 3 intensity planes
+        (default 3, one per plane). The backbone's first conv then sees
+        ``3 + freq_input_planes`` input channels.
+    """
+
+    def __init__(self, *args, freq_input_planes: int = 3, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.freq_input_planes = int(freq_input_planes)
+        if self.freq_input_planes < 1:
+            raise ValueError(f"freq_input_planes must be >= 1, got {self.freq_input_planes}")
+        self.in_channels = 3 + self.freq_input_planes
+        self._rebuild_first_stage()
+
+    def _rebuild_first_stage(self) -> None:
+        """Rebuild the CNN stages with the widened first-conv input channels."""
+        stages = []
+        in_ch = self.in_channels
+        for out_ch in self.channels:
+            stages.append(
+                nn.Sequential(
+                    nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=0),
+                    nn.BatchNorm2d(out_ch),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(2),
+                )
+            )
+            in_ch = out_ch
+        self.features = nn.Sequential(*stages)
+
+    @staticmethod
+    def _fft_channels(images: torch.Tensor) -> torch.Tensor:
+        # fft2 (not rfft2) so the spectrum has N spatial samples per axis and
+        # can be concatenated channel-wise with the N x N intensity planes.
+        F = torch.fft.fft2(images, norm="ortho")
+        return torch.log1p(F.abs())
+
+    def _image_encoding(self, images: torch.Tensor) -> torch.Tensor:
+        freq = self._fft_channels(images[:, : self.freq_input_planes])
+        x = torch.cat([images, freq], dim=1)
+        x = self.features(x)
+        x = self.avgpool(x)
+        return torch.flatten(x, 1)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.mlp(self._image_encoding(images))
 
 
 class CNN1Star(BaseBeaconlessCNN):
