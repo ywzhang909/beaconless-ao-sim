@@ -91,6 +91,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aotools" },
+    { name = "click" },
     { name = "cupy" },
     { name = "h5py" },
     { name = "joblib" },
@@ -121,6 +122,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aotools", specifier = ">=1.0.8" },
+    { name = "click", specifier = ">=8.5.0" },
     { name = "cupy", specifier = ">=14.2.0" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "joblib", specifier = ">=1.5.3" },
