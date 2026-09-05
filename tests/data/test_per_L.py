@@ -147,6 +147,55 @@ def test_make_state_phi_focus_uses_state_L():
     np.testing.assert_allclose(st.phi_focus, expected, rtol=1e-12, atol=0.0)
 
 
+def test_make_state_screen_count_and_dz_track_L():
+    """RED: n_screens and dz derive from state.L, not the fixed p.n_screens.
+
+    Prior to the root-cause fix, make_state hard-coded ``n_screens = int(p.n_screens)``
+    (10) while per-sample L spanned [L_min, L_max]. That meant xed split_step
+    through 10 screens = 1000 m regardless of L, so a sample drawn at L=2599 m
+    was focused at 1000 m and no correction branch could refocus it. This test
+    pins n_screens = round(L / screen_sep) and dz = L / n_screens (exactly the
+    per-L propagation distance the fresnel legs and imaging backprop use).
+    """
+    cfg = make_cfg()
+    shared = _base_shared(cfg)
+    p = cfg.physical
+    st = make_state(cfg, shared, 2599.0)
+    assert st.n_screens == int(round(2599.0 / p.screen_sep))
+    assert st.dz == pytest.approx(2599.0 / st.n_screens)
+    st_fixed = make_state(cfg, shared, p.L)
+    assert st_fixed.n_screens == p.n_screens
+
+
+def test_make_state_r0_slab_uses_screen_count():
+    """RED: r0_slab = r0_path(L) * n^(3/5) with n = round(L/screen_sep)."""
+    cfg = make_cfg()
+    shared = _base_shared(cfg)
+    p = cfg.physical
+    for L in (1006.0, 2599.0):
+        st = make_state(cfg, shared, L)
+        from data.simulate import compute_r0
+
+        n = int(round(L / p.screen_sep))
+        r0_path = compute_r0(shared.lam, float(p.cn2), L)
+        assert st.r0_slab == pytest.approx(r0_path * n ** (3.0 / 5.0))
+
+
+def test_make_state_beacon_spherical_uses_state_L():
+    """RED: get(zern) defocus removal must use state.L, not the fixed p.L.
+
+    _beacon_phase_conj removes the converging-spherical phase with radius
+    ``shared.L``. Prior to the fix the wrapper used ``float(p.L)`` (fixed 1000 m),
+    leaving ~50 rad of residual defocus inside phi_conj for an L=2600 m sample.
+    This pins the state's L as the defocus-removal radius.
+    """
+    cfg = make_cfg()
+    shared = _base_shared(cfg)
+    st = make_state(cfg, shared, 2599.0)
+    assert st.L == 2599.0
+    assert st.L == pytest.approx(st.focal)
+
+
 def test_make_state_bucket_and_imaging_scale_with_L():
     """Larger L -> larger bucket diameter, larger f_obj (zR ~ r0^2 ~ 1/L^{...})."""
     cfg = make_cfg()

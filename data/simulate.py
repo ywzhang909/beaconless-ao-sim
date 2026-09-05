@@ -294,9 +294,11 @@ def make_state(cfg: "SimConfig", shared: "SharedSim", L: float) -> SimSampleStat
         N, lam, focal, Dscope, float(b.diameter_frac), dx
     )
 
-    # Per-slab r0 and screen count
-    n_screens = int(p.n_screens)
+    # Per-slab r0 and screen count: the number of slabs follows the per-sample
+    # propagation distance L (screen_sep spacing), not a fixed global count.
+    n_screens = int(round(float(L) / float(p.screen_sep)))
     r0_slab = r0_path * n_screens ** (3.0 / 5.0)
+    dz = float(L) / n_screens
 
     return SimSampleState(
         L=float(L),
@@ -323,7 +325,7 @@ def make_state(cfg: "SimConfig", shared: "SharedSim", L: float) -> SimSampleStat
         k=k,
         rspot=rspot,
         Dscope=Dscope,
-        dz=shared.dz,
+        dz=dz,
         L0=float(p.L0),
         l0_sim=float(p.l0_sim),
         cn2=float(p.cn2),
@@ -555,6 +557,27 @@ def vacuum_intensity(cfg: SimConfig, shared: Any = None) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Per-sample helpers
 # --------------------------------------------------------------------------- #
+_oopao_cache: dict[tuple, OopaoScreenBackend] = {}
+
+
+def _oopao_for(shared: Any, n_screens: int, p: Any) -> OopaoScreenBackend:
+    """Return (and cache) an OOPAO backend for the given per-sample screen count."""
+    key = (shared.N, shared.dx, shared.Dscope, shared.lam, float(p.cn2),
+           float(p.L0), int(n_screens))
+    if key not in _oopao_cache:
+        _oopao_cache[key] = OopaoScreenBackend(
+            N=shared.N,
+            dx=shared.dx,
+            Dscope=shared.Dscope,
+            lam=shared.lam,
+            cn2=float(p.cn2),
+            L=float(getattr(shared, "L", p.L) or p.L),
+            L0=float(p.L0),
+            n_screens=int(n_screens),
+        )
+    return _oopao_cache[key]
+
+
 def _make_screens(seed: int, cfg: SimConfig, shared: Any) -> np.ndarray:
     """Generate ``n_screens`` deterministic turbulence phase screens.
 
@@ -588,19 +611,16 @@ def _make_screens(seed: int, cfg: SimConfig, shared: Any) -> np.ndarray:
     p = cfg.physical
 
     if shared.oopao is not None:
-        # OOPAO path: per-layer screens drawn from the shared OOPAO Atmosphere,
-        # each rescaled to the target per-slab r0 and cropped to N x N.
-        # CNNL (Option B): pass the per-sample r0_slab so turbulence amplitude
-        # scales with the per-sample propagation distance L (no atmosphere
-        # rebuild — only the reference-r0 -> per-L-r0 rescale changes).
-        # 中文：OOPAO 路径 —— 从共享 OOPAO 大气中逐层抽取屏幕，每层重缩放到
-        # 目标每 slab r0 并裁剪到 N×N。CNNL（选项 B）：传入逐样本 r0_slab，
-        # 使湍流振幅随逐样本传播距离 L 缩放（无需重建大气 —— 仅参考 r0 ->
-        # 逐 L r0 的重缩放变化）。
         r0_slab = getattr(shared, "r0_slab", None)
-        return shared.oopao.make_screens(seed, r0_slab=r0_slab)
+        n_screens = getattr(shared, "n_screens", None)
+        if n_screens is None or n_screens == shared.oopao.n_screens:
+            return shared.oopao.make_screens(seed, r0_slab=r0_slab)
+        oopao = _oopao_for(shared, n_screens, p)
+        return oopao.make_screens(seed, r0_slab=r0_slab)
 
-    n_screens = int(p.n_screens)  # 屏层数（= L / screen_sep，表 1 = 10）
+    n_screens = getattr(shared, "n_screens", None)
+    if n_screens is None:
+        n_screens = int(p.n_screens)
     # Per-slab r0: if state has r0_slab (per-L), use it; else compute from p.L.
     r0_slab = getattr(shared, "r0_slab", None)
     if r0_slab is None:
@@ -814,7 +834,7 @@ def _beacon_phase_conj(
     # 使残余湍流相位能干净解卷绕；全口径低阶 Zernike 拟合离焦会被弱场边缘
     # 离群点污染。
     k = 2.0 * np.pi / shared.lam
-    spherical = k * shared.r2 / (2.0 * float(p.L))  # 会聚球面相位 [rad]
+    spherical = k * shared.r2 / (2.0 * (getattr(shared, "L", None) or float(p.L)))
     E_flat = E_back * np.exp(1j * spherical)  # 移除离焦后的平坦场
 
     # 强度引导的 2D 解卷绕（质量图 = 瞳孔处信标强度）
