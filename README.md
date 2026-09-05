@@ -42,8 +42,9 @@ with multi-plane convolutional neural network,"* Opt. Express 33(15):31010
 （`r0_slab = r0_path · n^(3/5)`）。通过 `physical.beam_source` 配置开关选择
 （`soapy | aotools | oopao`；默认 `oopao`）。自定义 FFT 分步传播器、算法 1
 信标反向传播和多平面成像全部保留 — OOPAO 仅提供湍流 + 瞳孔 + Zernike 基底。
-OOPAO 屏幕与 aotools 路径在统计上等效（每 slab OPD 标准差比值 ≈ 0.84）且
-按种子确定性生成。
+OOPAO 屏幕按种子确定性生成，每层幅度重标定到目标每 slab r0（`_rescale_for`
+  完成 500 nm → `lam` 波长换算 + `r0^(-5/6)` 幅度缩放 + 生成器标定常数去除），
+  使每 slab OPD 标准差匹配 Kolmogorov 理论（ratio ≈ 0.99，逐种子 ~10% 采样噪声）。
 
 ## 目录结构
 

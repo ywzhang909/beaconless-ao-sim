@@ -154,16 +154,21 @@ OOPAO 自带的 `cn2` 记账会把总 Cn2 除以 `max(altitude)`，导致分层 
 - 再做幅度重缩放，使逐层 r0 **恰好等于** `r0_slab = r0_path · n^(3/5)`
   （与 aotools 路径一致）。
 
-由于 von-Karman 功率谱按 `r0^(-5/3)` 缩放，常量幅度重缩放因子
-`sqrt((r0_slab / r0_ref)^(5/3))` 是一次统计上精确的 r0 变换（相位屏形状按
-r/L0/l0 保持不变）。结果是：OOPAO 屏幕与 aotools 屏幕**统计等价**（同样的
-逐层 r0、L0、l0），仅随机实现不同。
+由于 von-Karman 功率谱按 `r0^(-5/3)` 缩放，相位幅度按 `r0^(-5/6)` 缩放。
+`layer.OPD` 是 **500 nm 波长下的相位**，而仿真在 `lam`（800 nm）下施加，
+故重缩放 `_rescale_for(r0_slab, lam)` 同时完成波长换算（相位 ∝ 1/λ）与
+r0 缩放（相位幅度 ∝ r0^(-5/6)），并除以实测的生成器标定常数 `_CAL_REF`
+（每层原始 std = `_CAL_REF·(D/r0_ref)^(5/6)`，D=0.30 m、L0=100 m、25 个
+种子平均值）。结果是：OOPAO 屏幕与 Kolmogorov 理论逐层标准差 ratio ≈ 1.00
+（逐种子 ~10% 采样噪声），与 aotools 路径统计等价。
 
 ### 5.3 层到屏的映射
 
 OOPAO 以 `resolution = N + 4` 像素构建每层（每侧留 2 像素余量，用于冻结流外圈）。
 我们裁剪中央 `N × N` 与瞳孔网格对齐。`layer.OPD` 是逐层相位（弧度，即
-`ft_sh_phase_screen` 的输出），不做 `2π/λ` 换算。
+`ft_sh_phase_screen` 在 **500 nm** 下的输出）；`make_screens` 乘上
+`_rescale_for(r0_slab, lam)` 完成波长换算与 r0 缩放（见 §5.2），不再单独做
+`2π/λ` 换算。
 
 ### 5.4 Python 片段
 
