@@ -20,7 +20,7 @@ physical:
   L: 1000.0                # propagation distance, fixed (CNN1); CNNL: 0.5-2.6 km random
   L_min: 1000.0            # [CNNL] per-sample L lower bound [m]; CNN1: same as L
   L_max: 2600.0            # [CNNL] per-sample L upper bound [m]; CNNL: 2600
-  L_random: true           # [CNNL] true => per-sample L ~ U[L_min, L_max]; false (CNN1): fixed L
+  L_random: false           # [CNNL] true => per-sample L ~ U[L_min, L_max]; false (CNN1): fixed L
   rytov_sigma2: 0.35       # Rytov variance, fixed (CNN1); CNNL: 0.1-2.0
   rytov_min: 0.35          # [CNNL] per-sample Rytov variance lower bound
   rytov_max: 0.35          # [CNNL] per-sample Rytov variance upper bound; CNNL: 2.0
@@ -65,7 +65,7 @@ data:
   n_eval: 50                # [DEMO MEDIUM] paper: 1,000 (CNN1) / 1,000 at 10 L values (CNNL)
   master_seed: 20250830    # seed schedule: sample seed = master_seed + sample_index
   workers: 96              # multiprocessing workers (machine has 384 cores)
-  h5_path: "data/beaconless_demo.h5"
+  h5_path: "data/beaconless_fixedL.h5"
   # Full paper scale (uncomment to reproduce paper dataset sizes):
   # n_train: 81000
   # n_test: 9000

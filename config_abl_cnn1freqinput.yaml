@@ -1,0 +1,91 @@
+# =============================================================================
+# Ablation: CNN1FreqInput (FFT-derived features as extra input channels)
+# Adoptable-method variant of CNN1 on the SAME fixed-L dataset (beaconless_fixedL.h5)
+# so it is directly comparable to the CNN1 baseline and other feature-branch methods.
+# =============================================================================
+
+physical:
+  cn2: 8.13e-15
+  l0: 0.0
+  l0_sim: 0.01
+  L0: 100.0
+  L: 1000.0
+  L_min: 1000.0
+  L_max: 2600.0
+  L_random: false
+  rytov_sigma2: 0.35
+  rytov_min: 0.35
+  rytov_max: 0.35
+  Dscope: 0.30
+  rspot: 0.075
+  wavelength: 800e-9
+  focal: 1000.0
+  N: 512
+  box_size: 0.30
+  n_screens: 10
+  screen_sep: 100.0
+  n_roughness: 10
+  roughness_seed: 42
+  beam_source: "oopao"
+  screen_pool: 0
+
+imaging:
+  zR_APWS: null
+  f_obj: null
+  plane_offset_frac: [0.0, 1.0, 2.0]
+
+bucket:
+  diameter_frac: 2.5
+
+data:
+  n_train: 200
+  n_test: 50
+  n_eval: 50
+  master_seed: 20250830
+  workers: 96
+  h5_path: "data/beaconless_fixedL.h5"
+
+model:
+  name: "CNN1FreqInput"
+  n_modes: 78
+  channels: [32, 64, 128]
+  kernel: 3
+  stride: 1
+  padding: 0
+  mlp_width: 512
+  mlp_depth: 4
+  pool_size: 18
+  length_head: false
+  dropout: 0.0
+  freq_input_planes: 3
+
+train:
+  optimizer: "adam"
+  lr: 1.0e-4
+  beta1: 0.9
+  beta2: 0.999
+  batch_size: 32
+  micro_batch_size: 2
+  n_steps: 800
+  loss: "mse"
+  seed: 0
+  amp: true
+  mixed_precision: true
+  sim_eval_every: 100000
+  sim_eval_n: 8
+  ckpt_dir: "checkpoints/cnn1freqinput"
+  log_every: 10
+  grad_clip: null
+  num_workers: 0
+
+eval:
+  bucket_mask_px: null
+  out_dir: "results"
+  plot_every: 20
+
+wandb:
+  project: "beaconless-ao-sim"
+  entity: "ywzhang909"
+  run_name: "cnn1freqinput_abl"
+  tags: ["cnn1freqinput", "abl", "fixedL"]
+  notes: "FFT-derived input channels on fixed-L corrected dataset (ablation vs CNN1)."
