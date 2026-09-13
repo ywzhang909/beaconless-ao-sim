@@ -817,3 +817,180 @@ CNNL 与 CNN1 在 baseline/minmax 下 FOM_ML ≈ 0.057–0.059 一致，确认 *
 长度头在预处理鲁棒性上与基线 CNN1 持平，未破坏输入契约**。
 
 ---
+
+## 11. 会话记录：数据生成管线与 DataLoader / 训练调优（2026-09-02 → 2026-09-03）
+
+> 本段内容原为 `docs/REPORT.md`（会话报告），已合并至本全流程报告（§11）。
+> 其中"大仿真数据生成"后续被 §4.6 的 300 样本修正物理数据集
+> （`fixedL.h5` / `demo.h5`）取代 —— 本文保留原始记录以说明工程脉络。
+
+### 11.1 数据生成管线（Algorithm 1，单趟）
+
+`data/simulate.generate_dataset` 实现论文 Algorithm 1 的单趟 HDF5 写出：
+
+1. 逐样本构造 10 层 OOPAO 湍流屏（`physics/oopao_backend.py`，von-Karman，
+   r0_slab = r0_path · n^(3/5)）。
+2. 衍射极限信标反向传播 → 共轭信标相位 → 倾斜跟踪（去 tip/tilt）→ 残余
+   `phi_beacon = phi_conj - phi_track`。
+3. 78 阶 Zernike 投影：`labels = M⁺_Z78 · phi_beacon`（CNN 训练目标），
+   `phi_z78 = M_Z78 · labels`（78 阶上界相位重构）。
+4. 各分支 FOM（`noao / track / beacon / z78`），每样本 ~75 s CPU 单进程。
+5. 多平面成像（`f_obj − zR / f_obj / f_obj + zR`）：零填充 scaled-FFT Fresnel
+   （`physics/propagation_fft.fresnel_padded`），10 个粗糙面 realization
+   非相干强度平均。
+6. 逐图像归一化到 12-bit 满量程（公式 13），量化 `uint16`。
+7. 流式写出至 HDF5，训练子集累加 mu / sigma / scale_p / vacuum_intensity。
+
+**单样本耗时构成**（单核）：
+
+| 步骤 | 耗时 | 占比 |
+|------|------|------|
+| `_make_screens`（OOPAO 10 屏生成） | 1.2 s | 1.6 % |
+| `_beacon_phase_conj`（信标反向 + BFS 解卷绕） | 0.6 s | 0.8 % |
+| `_fom_leg` × 4 | 1.8 s | 2.4 % |
+| **`_imaging`（3 平面 × 10 realization × N_pad ≤ 6125）** | **79.7 s** | **95.7 %** |
+| 量化 + 写出 | 0.5 s | 0.7 % |
+
+### 11.2 10 样本冒烟测试
+
+`python -m data.generate_h5 --config config_10samples.yaml`
+（n_train=8, n_test=2, n_roughness=2）：267 s，产物
+`data/beaconless_demo_10samples.h5`（6.3 MB），中位 FOM
+noao 0.4678 = track 0.4678（无 AO 与仅倾斜等价，湍流高阶主导）；
+beacon 0.9819（理想共轭上界）；z78 0.9272。
+
+### 11.3 Windows 多进程 OOPAO Pickle 失败 → workers==1 跳过 Pool
+
+OOPAO `Telescope`/`Source` 携带 C 级状态、不可 pickle，`spawn` Pool 在
+Windows 上抛 `AttributeError`。修复：`n_workers == 1` 时直接
+`_worker_generate(batch)` 串行调用，跳过 Pool（`data/simulate.py`）。
+
+### 11.4 分块并行（`data/generate_full.py` + `scripts/launch_chunks.py`）
+
+单进程 91 000 样本 ≈ 87 天不可行 → 启动 N 个独立进程（各自 OOPAO 实例），
+索引切分为 N 段写入 `data/chunks/chunk_{cid:04d}.h5`，随后 `--merge` 合并：
+`config_demo_full.yaml`（2000/400/100）+ 4 chunks。此全量数据后来被
+§4.6 的 300 样本修正物理数据集取代。
+
+### 11.5 H5 Schema
+
+`(N_total, 3, 512, 512) uint16 images`、`(N_total, 78) float32 labels`、
+`(N_total,) float32 fom_{noao,track,beacon,z78}`、`seeds`、`L`、
+`{train,test,eval}_idx`、`mu`、`sigma`、`scale_p`、`vacuum_intensity`，
+属性 `config_json`。
+
+### 11.6 `BeaconlessH5Dataset` 内存预读与 DataLoader 调优
+
+`train.py` 新增 `preload: bool`：一次性读入 split 的 images/labels/seeds
+到 numpy（不复制），`__getitem__` 直接切片 → 0 h5py 调用。小数据集
+（8 train × 50 batches）ms/batch 1.06 → 0.44（~2.4×）。内存成本
+~1.5 MB/sample（3×512×512 uint16 + 78×4 B）；demo 2500 ≈ 3.7 GB，
+论文 91 000 ≈ 134 GB —— **大规模请勿启用** `preload_to_ram`。
+
+DataLoader 调优（均由 `cfg.train.*` 暴露 + CLI flags）：
+
+| 参数 | 之前 | 之后 |
+|------|------|------|
+| `drop_last` | False | `is_dist`（DDP 跨 rank 一致） |
+| `pin_memory_device` | — | `"cuda"`（若 GPU） |
+| `persistent_workers` | — | True（num_workers>0 时） |
+| `prefetch_factor` | — | 4（num_workers>0 时） |
+
+### 11.7 CNN1 训练（10 样本 smoke）
+
+`config_train_cnn1_smoke.yaml`：200 步、bs=8、Adam lr=1e-4、preload +
+num_workers=0（避免 spawn pickle）、AMP off。总耗时 6:01，最终训练损失
+**0.000807**（单调下降）。Sim-eval FOM 为 NaN —— 同根问题：`SimEvaluator`
+的 `spawn Pool(processes=1)` 在 Windows 上仍需 pickle cfg（含 OOPAO）→
+Pool 返回空 → median 退化 NaN。论文级 sim-eval 需 in-process 串行化或
+IPC 迁移 OOPAO 状态（后续 §4.6 的独立 `evaluate.py` 用 16-worker 进程池
+逐样本独立仿真解决了该路径）。
+
+### 11.8 配套工具
+
+- `data/generate_full.py`（chunked CLI：`--launch` / `--chunk N` / `--merge`）
+- `data/dataset_summary.py`（H5 摘要 CLI）
+- `scripts/launch_chunks.py`（N 并行 chunk worker 启动器）
+
+---
+
+## 12. 三测量平面数据合理性检查（本工作，2026-09-10）
+
+> 评估 §1.5 / §4.6 所生成数据集的 3 个测量平面（`f_obj − zR` / `f_obj` /
+> `f_obj + zR`，公式 12）图像是否物理合理。检查脚本：
+> `scripts/check_planes.py`（硬校验 + 蒙太奇）、
+> `scripts/check_planes_quant.py`（定量诊断）。
+
+### 12.1 方法
+
+对两个数据集各抽 20 个分层样本（固定 L：`data/beaconless_fixedL.h5`；
+per-L：`data/beaconless_demo.h5`），逐图像 /2047 后计算：
+
+- **能量集中度**：r ≤ 16 px（≈ 1.6× Airy 半径）、r ≤ 64 px、r ≤ 128 px
+  （≈ 半窗）内的能量占比；
+- **边缘带均值**（外 10 px 环）：FFT 卷绕 / 吸收边界泄漏检测；
+- **强度质心**偏移（光束漂移检测）、径向剖面 HWHM；
+- 硬校验：无 NaN、无全零平面、量化无饱和、max = 1.0（逐图像归一化生效）。
+
+### 12.2 结果（20 样本，均值 ± 标准差）
+
+**固定 L**（`beaconless_fixedL.h5`，f_obj = 2·zR = 1289.6 m，
+DX_PLANE = 0.430 mm/px）：
+
+| 平面 | core16% | core64% | half128% | 边缘带均值 | HWHM (px) | 全零% |
+|------|--------|--------|----------|-----------|-----------|-------|
+| pre-focus (f−zR) | 0.76±0.30 | 12.5±2.3 | 49.5±3.6 | 0.0158 | 131 | 0.12 |
+| **focus** | **2.30±1.14** | **31.8±9.8** | **76.1±5.8** | 0.0012 | 81 | 7.35 |
+| post-focus (f+zR) | 0.59±0.23 | 8.8±1.5 | 33.2±4.7 | 0.0374 | 172 | 0.03 |
+
+**per-L**（`beaconless_demo.h5`，L ∈ [1006.9, 2599.2] m，
+DX_PLANE = 0.137–0.430 mm/px）：
+
+| 平面 | core16% | core64% | half128% | 边缘带均值 | HWHM (px) | 全零% |
+|------|--------|--------|----------|-----------|-----------|-------|
+| pre-focus (f−zR) | 0.30±0.07 | 4.9±0.9 | 19.6±3.9 | 0.1460 | 237 | 0.00 |
+| **focus** | **1.08±0.55** | **16.0±7.6** | **47.1±16.4** | 0.0390 | 115 | 0.51 |
+| post-focus (f+zR) | 0.34±0.14 | 5.3±1.2 | 20.5±3.8 | 0.1618 | 246 | 0.00 |
+
+### 12.3 物理判定：**PASS**
+
+1. **焦平面能量集中，离焦平面弥散** —— 两个数据集均满足论文预期层级
+   （focus core16% / half128% 显著高于 ±zR 平面）。焦点 Airy 半径
+   1.22λf/D ≈ 9.8 px，与 core16% 窗口（≈ 1.6× Airy）匹配。
+2. **无 NaN / 全零 / 饱和** —— 全部通过；max = 1.0 确认逐图像归一化
+   （§1.3 修正 2）生效。
+3. **边缘带 / 卷绕** —— 固定 L 焦平面边缘带仅 0.0012（吸收边界生效）。
+   pre/post-focus 边缘带升高（固定 L 0.016–0.037；per-L 0.146–0.162）
+   为**传感器裁剪的物理现象而非伪影**：几何离焦光斑半径
+   `(D/f_obj)·zR = D/2 = 150 mm`，而相机半窗仅 `256·DX_PLANE ≈ 110 mm`
+   （固定 L；per-L 长 L 更窄至 35 mm）—— 离焦光斑天然超出传感器视野，
+   这正是逐图像归一化所适配的输入形态。
+4. **质心偏移** —— 焦平面质心 ±20–50 px 偏移为强湍流（D/r0 ≈ 7.4）
+   下的光束漂移 / 亮斑位置涨落，均值仍居中，非系统性偏差。
+5. **pre/post 不对称** —— post-focus 比 pre-focus 更弥散（half128%、
+   HWHM 均更大）来自离焦符号的不对称传播（f+zR 面传播距离远于 f−zR 面）
+   与湍流相位残留，属可预期的物理结果。
+
+**结论**：3 个测量平面图像物理合理 —— focus 亮核 + 暗晕、±zR 离焦弥散、
+无卷绕/NaN/饱和伪影，可直接作为 CNN 输入（§5 预处理契约验证的正是该形态）。
+
+![三平面检查蒙太奇](results/fig_planes_check.png)
+*每个数据集 3 个样本的 3 测量平面强度图（log 标度）：焦平面亮核集中、
+离焦平面弥散、边缘无卷绕亮点。*
+
+![径向强度剖面（固定 L）](results/fig_planes_radial.png)
+*固定 L 数据集 20 样本平均径向强度剖面：focus 峰值最高且快速衰减，
+±zR 平面更平坦弥散。*
+
+![径向强度剖面（per-L）](results/fig_planes_radial_demo.png)
+*per-L 数据集：focus 相对集中、±zR 更弥散且边缘抬升（长 L 传感器裁剪）。*
+
+---
+
+## 13. 文档变更记录
+
+- **2026-09-10**：合并 `docs/REPORT.md`（2026-09-02→03 会话报告）为本报告
+  §11，原文件删除；新增 §12 三测量平面数据合理性检查（附图）；
+  报告入口统一为本文件（README.md 链接同步指向 §4.6 / §5.1）。
+
+---
