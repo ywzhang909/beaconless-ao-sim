@@ -21,6 +21,13 @@ results/*
 !results/fig_*.png
 !results/results.json
 
+# pinn-shaper subproject (PINN beam-shaping reproduction): its figures/models/logs
+# are committed so pinn-shaper/report.md and the notebooks render on GitHub
+!pinn-shaper/results/*.png
+!pinn-shaper/images/*.png
+!pinn-shaper/**/*.png
+!pinn-shaper/*.log
+
 .vscode/settings.json
 
 # local code intelligence index (regenerated on demand)

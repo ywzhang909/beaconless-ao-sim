@@ -212,6 +212,36 @@ g 与 η 均更高；StarNet 骨干在少数据下未超过基线（参数效率
 所需的离焦视差（FOM_ML ≈ 0.31，R_j ≈ 0.02）。逐图像归一化后 min-max ≈ 基线
 （FOM_ML ≈ 0.57）。完整表格见 [`REPORT.md` §5.1](REPORT.md)（方法与结果表）。
 
+## PINN 光束整形（`pinn-shaper/` 子项目）
+
+本仓库同时收纳了第二个独立的论文复现：**PINN 光束整形**
+（R. de la Fuente Herrezuelo 等，*"Physics-Informed Neural Networks for Optimal
+Beam Shaping in Flat Optics"*，[arXiv:2607.18012](https://arxiv.org/abs/2607.18012)）。
+它以 `pinn-shaper/` 子目录形式并入，与本 AO 仿真的文件互不冲突，可独立运行。
+
+- **任务**：用物理信息神经网络（PINN）求解相位分布 $\Phi(x,y)$，使高斯入射光传播
+  到目标平面后形成指定光斑（六角星、DT 字母，近场 / 远场两种），并与经典
+  Gerchberg–Saxton (GS) 算法对比。
+- **完整复现报告（含全部指标与图）**：[`pinn-shaper/report.md`](pinn-shaper/report.md)。
+  核心结论：PINN 远场 MSE $4.0\times10^6$（论文 $3.59\times10^6$）远优于
+  GS $2.08\times10^8$（论文 $2.08\times10^8$，逐位一致），光能利用率
+  PINN 99.96% vs GS 95.90% —— PINN 相对 GS 约 **52 倍** MSE 改进。
+- **结构**：
+
+  ```
+  pinn-shaper/pinn_shaper/     PINN 求解核心（fcnn 网络 + 近/远场 shaper）
+  pinn-shaper/*.ipynb          论文 4 个原始 notebook
+  pinn-shaper/repro/           从零训练复现脚本（--seed / --no-train）
+  pinn-shaper/reproduced_models/  4 个从零训练权重
+  pinn-shaper/saved_models/    官方预训练权重（论文数值校准基线）
+  pinn-shaper/results/         复现实验图形
+  pinn-shaper/report.md        完整复现报告
+  ```
+
+- **运行**（用 GPU 剩余显存，以 DT 远场 + GS 为例）：
+  `CUDA_VISIBLE_DEVICES=1 /home/ws/pinn-venv/bin/python pinn-shaper/repro/exp4_dt_farfield_gs.py --seed 0`
+  依赖 `diffractsim`（CPU 后端，2048×2048）+ CUDA torch，venv 见 `pinn-shaper/README.md`。
+
 ## 说明
 
 - 78 阶上界 `FOM_Z78` 在强湍流样本下接近跟踪基线：当 `D/r0≈7.4` 时，

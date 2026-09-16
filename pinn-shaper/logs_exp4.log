@@ -1,0 +1,139 @@
+======================================================================
+Experiment 4 (DT far-field): FULL TRAINING FROM SCRATCH
+======================================================================
+Run Phase 1: Adam
+Adam Iter     0: Loss = 2.73741555 (Interior = 0.02737416, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 2.60268664 (Interior = 0.02602687, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   100: Loss = 0.29038346 (Interior = 0.00290383, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.28970152 (Interior = 0.00289702, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   200: Loss = 0.13634634 (Interior = 0.00136346, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.13530114 (Interior = 0.00135301, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   300: Loss = 0.12963077 (Interior = 0.00129631, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12979569 (Interior = 0.00129796, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   400: Loss = 0.12909155 (Interior = 0.00129092, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12820590 (Interior = 0.00128206, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   500: Loss = 0.12858741 (Interior = 0.00128587, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12676135 (Interior = 0.00126761, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   600: Loss = 0.12559164 (Interior = 0.00125592, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12586500 (Interior = 0.00125865, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   700: Loss = 0.12779112 (Interior = 0.00127791, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12693377 (Interior = 0.00126934, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   800: Loss = 0.12446373 (Interior = 0.00124464, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12486521 (Interior = 0.00124865, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   900: Loss = 0.12160876 (Interior = 0.00121609, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12163963 (Interior = 0.00121640, BC_x = 0.00000000, BC_y = 0.00000000)
+Run Phase 2: Adam
+Adam Iter     0: Loss = 0.17927660 (Interior = 0.00179277, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.12668902 (Interior = 0.00126689, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   100: Loss = 0.15459134 (Interior = 0.00154591, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.17472753 (Interior = 0.00174728, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   200: Loss = 0.14860883 (Interior = 0.00148609, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.16747881 (Interior = 0.00167479, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   300: Loss = 0.13926977 (Interior = 0.00139270, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.15736534 (Interior = 0.00157365, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   400: Loss = 0.13219501 (Interior = 0.00132195, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.14901371 (Interior = 0.00149014, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   500: Loss = 0.10705677 (Interior = 0.00107057, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.09614526 (Interior = 0.00096145, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   600: Loss = 0.04713867 (Interior = 0.00047139, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.04548160 (Interior = 0.00045482, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   700: Loss = 0.02392403 (Interior = 0.00023924, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.02195255 (Interior = 0.00021953, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   800: Loss = 0.01395108 (Interior = 0.00013951, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.01290064 (Interior = 0.00012901, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter   900: Loss = 0.01004279 (Interior = 0.00010043, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00899997 (Interior = 0.00009000, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1000: Loss = 0.00850824 (Interior = 0.00008508, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00737995 (Interior = 0.00007380, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1100: Loss = 0.00767509 (Interior = 0.00007675, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00651174 (Interior = 0.00006512, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1200: Loss = 0.00699665 (Interior = 0.00006997, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00635098 (Interior = 0.00006351, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1300: Loss = 0.00637185 (Interior = 0.00006372, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00629655 (Interior = 0.00006297, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1400: Loss = 0.00580592 (Interior = 0.00005806, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00615061 (Interior = 0.00006151, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1500: Loss = 0.00530231 (Interior = 0.00005302, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00594137 (Interior = 0.00005941, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1600: Loss = 0.00486240 (Interior = 0.00004862, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00561606 (Interior = 0.00005616, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1700: Loss = 0.00454016 (Interior = 0.00004540, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00527524 (Interior = 0.00005275, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1800: Loss = 0.00427934 (Interior = 0.00004279, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00495063 (Interior = 0.00004951, BC_x = 0.00000000, BC_y = 0.00000000)
+Adam Iter  1900: Loss = 0.00406509 (Interior = 0.00004065, BC_x = 0.00000000, BC_y = 0.00000000)
+           Test Loss = 0.00468066 (Interior = 0.00004681, BC_x = 0.00000000, BC_y = 0.00000000)
+Run Phase 3: LBFGS
+LBFGS Iter   100: Loss = 0.00313440 Test Loss = 0.00238445 (Interior = 0.00002384, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   200: Loss = 0.00265258 Test Loss = 0.00174415 (Interior = 0.00001744, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   300: Loss = 0.00190476 Test Loss = 0.00161076 (Interior = 0.00001611, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   400: Loss = 0.00123715 Test Loss = 0.00112586 (Interior = 0.00001126, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   500: Loss = 0.00084510 Test Loss = 0.00087716 (Interior = 0.00000877, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   600: Loss = 0.00061227 Test Loss = 0.00058735 (Interior = 0.00000587, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   700: Loss = 0.00043152 Test Loss = 0.00045727 (Interior = 0.00000457, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   800: Loss = 0.00032050 Test Loss = 0.00037724 (Interior = 0.00000377, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter   900: Loss = 0.00022782 Test Loss = 0.00025992 (Interior = 0.00000260, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1000: Loss = 0.00016717 Test Loss = 0.00021091 (Interior = 0.00000211, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1100: Loss = 0.00013671 Test Loss = 0.00015705 (Interior = 0.00000157, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1200: Loss = 0.00011637 Test Loss = 0.00013222 (Interior = 0.00000132, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1300: Loss = 0.00010444 Test Loss = 0.00013525 (Interior = 0.00000135, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1400: Loss = 0.00009570 Test Loss = 0.00013384 (Interior = 0.00000134, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1500: Loss = 0.00008898 Test Loss = 0.00009667 (Interior = 0.00000097, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1600: Loss = 0.00008388 Test Loss = 0.00010310 (Interior = 0.00000103, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1700: Loss = 0.00007948 Test Loss = 0.00009972 (Interior = 0.00000100, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1800: Loss = 0.00007465 Test Loss = 0.00010425 (Interior = 0.00000104, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  1900: Loss = 0.00006953 Test Loss = 0.00008457 (Interior = 0.00000085, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2000: Loss = 0.00006310 Test Loss = 0.00006780 (Interior = 0.00000068, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2100: Loss = 0.00005802 Test Loss = 0.00007065 (Interior = 0.00000071, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2200: Loss = 0.00005321 Test Loss = 0.00005380 (Interior = 0.00000054, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2300: Loss = 0.00004890 Test Loss = 0.00005240 (Interior = 0.00000052, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2400: Loss = 0.00004528 Test Loss = 0.00004160 (Interior = 0.00000042, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2500: Loss = 0.00004175 Test Loss = 0.00004208 (Interior = 0.00000042, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2600: Loss = 0.00003864 Test Loss = 0.00003982 (Interior = 0.00000040, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2700: Loss = 0.00003566 Test Loss = 0.00003141 (Interior = 0.00000031, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2800: Loss = 0.00003288 Test Loss = 0.00003006 (Interior = 0.00000030, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  2900: Loss = 0.00003060 Test Loss = 0.00002823 (Interior = 0.00000028, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3000: Loss = 0.00002842 Test Loss = 0.00002536 (Interior = 0.00000025, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3100: Loss = 0.00002645 Test Loss = 0.00002680 (Interior = 0.00000027, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3200: Loss = 0.00002476 Test Loss = 0.00002517 (Interior = 0.00000025, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3300: Loss = 0.00002310 Test Loss = 0.00002055 (Interior = 0.00000021, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3400: Loss = 0.00002136 Test Loss = 0.00002433 (Interior = 0.00000024, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3500: Loss = 0.00001998 Test Loss = 0.00002290 (Interior = 0.00000023, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3600: Loss = 0.00001855 Test Loss = 0.00002261 (Interior = 0.00000023, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3700: Loss = 0.00001702 Test Loss = 0.00001450 (Interior = 0.00000015, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3800: Loss = 0.00001543 Test Loss = 0.00001687 (Interior = 0.00000017, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  3900: Loss = 0.00001421 Test Loss = 0.00001402 (Interior = 0.00000014, BC_x = 0.00000000, BC_y = 0.00000000)
+LBFGS Iter  4000: Loss = 0.00001323 Test Loss = 0.00001374 (Interior = 0.00000014, BC_x = 0.00000000, BC_y = 0.00000000)
+Run Phase 4: LBFGS
+
+Final Test Losses:
+Total = 0.00001409, Interior = 0.00000014, BC_x = 0.00000000, BC_y = 0.00000000
+Saved model -> reproduced_models/DT_flat-top-farfield_model.pth
+Saved results/exp4_dt_farfield_phase.png
+Saved results/exp4_dt_farfield_pinn.png
+An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+Saved results/exp4_gs_convergence.png
+Max |alpha_PINN - alpha_GS|: 0.0
+Max |beta_PINN - beta_GS|: 0.0
+Saved results/exp4_gs_validation.png
+
+======================================================================
+SHAPE ERROR ON (alpha,beta) in [-1,1]^2  --  KEY PAPER METRICS
+======================================================================
+  PINN: MSE = 4.033485e+06   RMS = 2.008354e+03   relative RMS = 3.147933e-02   scale = 9.993202e-01
+  GS:   MSE = 2.081097e+08   RMS = 1.442601e+04   relative RMS = 2.261161e-01   scale = 9.931814e-01
+  Paper: PINN MSE ~ 3.59e6 (rel RMS 2.97%), GS MSE ~ 2.08e8 (rel RMS 22.6%)
+Saved results/exp4_shape_error_comparison.png
+Saved results/exp4_cross_section.png
+
+======================================================================
+ENERGY EFFICIENCY  eta = energy in target support / incident energy
+======================================================================
+  Target support threshold: 3.405569e+02
+  Target support area in alpha-beta space: 9.510690e-01
+  Incident energy flux: 1.005296e+05
+  PINN target-area flux: 1.004928e+05
+  GS target-area flux:   9.640637e+04
+  PINN efficiency: 99.963428%
+  GS efficiency:   95.898532%
+  Paper: PINN ~ 99.98%, GS ~ 95.90%
